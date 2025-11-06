@@ -1,80 +1,86 @@
 <#
 .SYNOPSIS
-  Prueft die fuer E-Mail-Betrieb wichtigen DNS-Records (MX, SPF, DMARC, DKIM, SRV/443)
-  fuer eine oder mehrere Domains ueber eure interne DNS-REST-API.
+  Prueft automatisiert die fuer den E-Mail-Betrieb wichtigen DNS-Eintraege
+  (MX, SPF, DMARC, DKIM, Autodiscover-SRV) ueber eure interne DNS-REST-API.
 
 .DESCRIPTION
-  Warum dieses Skript?
-  - Bevor ihr DNSSEC/DMARC "hart" dreht, wollt ihr sicher sein, dass die Mail-DNS-Basics stimmen.
-  - Dieses Skript prueft automatisiert:
-      MX (@-Domain)                          -> Mail-Routing
-      SPF (TXT @-Domain)                     -> Versandautorisierung
-      DMARC (TXT _dmarc.<domain>)            -> Richtlinie none/quarantine/reject
-      DKIM (TXT/CNAME *_domainkey.*)         -> Signaturschluessel oder Delegation
-      SRV _autodiscover._tcp.<domain> :443   -> Outlook Autodiscover auf Port 443
-  - Domains koennen explizit uebergeben oder dynamisch per list_zones-Suche
-    ermittelt werden.
-  - Bewertet den Status (OK/WARN/FAIL), optional strenger mit -Strict.
-  - Gibt ein maschinenlesbares JSON zurueck + (optional) eine tabellarische Zusammenfassung.
-  - Exitcodes: 0 OK | 1 WARN | 2 FAIL (ideal fuer CI/CD).
+  Dieses Skript fuehrt eine wiederholbare Mail-DNS-Pruefung fuer beliebig viele
+  Domains aus. Es ist als Werkzeug fuer Administratorinnen und Auszubildende
+  gedacht und deshalb in klar abgegrenzte Abschnitte mit ausfuehrlichen
+  Kommentaren gegliedert. Jeder Abschnitt spiegelt exakt einen Arbeitsschritt
+  wider:
+
+  1. Grundkonfiguration validieren und API-Verbindung testen
+  2. Domains zusammentragen (manuell + automatische list_zones-Suche)
+  3. Fuer jede Domain die benoetigten Records abrufen
+  4. Ergebnisse bewerten (OK/WARN/FAIL) und als JSON sowie optional als Tabelle
+     ausgeben
+
+  Die einzelnen Checks entsprechen den Mindestanforderungen fuer
+  produktionsrelevante Mail-Zonen:
+      MX  (@-Domain)                       -> Mail-Routing
+      SPF (TXT @-Domain)                   -> Versandautorisierung
+      DMARC (TXT _dmarc.<domain>)          -> Richtlinie none/quarantine/reject
+      DKIM (TXT/CNAME *_domainkey.*)       -> Signaturschluessel oder Delegation
+      SRV  _autodiscover._tcp.<domain>:443 -> Outlook Autodiscover via Port 443
 
 .PARAMETER ApiBase
-  Basis-URL eurer DNS-API (ohne Slash am Ende), z. B.:
+  Basis-URL der DNS-API (ohne Slash am Ende), z. B.:
   https://noc-portal.itc.rwth-aachen.de/dns-admin/api/v1
 
 .PARAMETER ApiToken
-  API-Token (alternativ: Umgebungsvariable DNS_API_TOKEN). Basic-Auth-Token-String.
+  API-Token (alternativ: Umgebungsvariable DNS_API_TOKEN). Der Wert entspricht
+  dem Base64-kodierten Basic-Auth-String.
 
 .PARAMETER Domains
-  Eine oder mehrere FQDNs (z. B. "mustereinrichtung.rwth-aachen.de").
+  Eine oder mehrere FQDNs, die explizit geprueft werden sollen.
 
 .PARAMETER DomainSearch
-  Eine oder mehrere Suchmuster (Wildcards erlaubt), die ueber list_zones passende
-  Domains aus der API ermitteln. Beispiel: "*.rwth-aachen.de".
+  Eine oder mehrere Suchmuster (Wildcards erlaubt). Die Treffer der
+  list_zones-Abfrage werden zur manuellen Liste hinzugefuegt.
 
 .PARAMETER OutputJson
-  Pfad, unter dem der JSON-Report zusaetzlich als Datei gespeichert wird (UTF-8).
+  Optionaler Dateipfad, unter dem der JSON-Report gespeichert wird.
 
 .PARAMETER AltRoot
-  Alternative Root fuer DKIM-Delegation (Default: rwth-aachen.de).
-  Hintergrund: Manche DKIM-Keys liegen zentral unter *. _domainkey.rwth-aachen.de.
+  Alternative Root fuer DKIM-Delegation (Standard: rwth-aachen.de). Einige
+  DKIM-Selector sind zentral unter *_domainkey.rwth-aachen.de abgelegt.
 
 .PARAMETER IncludeDrafts
-  Records ohne "status=deployed" ebenfalls beruecksichtigen (Standard: nur deployed).
+  Aktiviert Records im Status "draft" (Standard: nur deployed).
 
 .PARAMETER VerboseZones
-  Gibt ausfuehrliche Zonendetails (ID, dnssec, status) aus (mit -Verbose sichtbar).
+  Gibt mit -Verbose zusaetzliche Zoneninformationen (ID, DNSSEC, Status) aus.
 
 .PARAMETER DebugHttp
-  Loggt jede HTTP-Anfrage (Body-first/QS-Fallback) als Verbose-Ausgabe.
+  Zeigt jede HTTP-Anfrage als -Verbose Meldung an (sowohl Body- als auch
+  Query-String-Variante).
 
 .PARAMETER Strict
-  Hebt "weiche" Warnungen auf FAIL an:
-   - SPF ohne "-all" => FAIL (statt WARN)
-   - DMARC mit "p=none" => FAIL (statt WARN)
+  Hebt einzelne Warnungen auf FAIL an:
+   - SPF ohne "-all" wird zum Fehler
+   - DMARC mit "p=none" wird zum Fehler
 
 .PARAMETER Summary
-  Druckt vor dem JSON eine kompakte Tabelle fuer Menschen/Logs.
+  Erstellt vor der JSON-Ausgabe eine gut lesbare Tabelle (Format-Table).
 
 .EXAMPLE
-  $env:DNS_API_TOKEN="..."
+  $env:DNS_API_TOKEN = "..."
   .\Check-MailDns.ps1 `
     -ApiBase "https://.../api/v1" `
-    -Domains "mustereinrichtung.rwth-aachen.de" `
-    -Summary -OutputJson ".\reports\maildns.json"
+    -Domains "itc.rwth-aachen.de","rwth-aachen.de" `
+    -Summary -OutputJson .\reports\maildns.json
 
 .EXAMPLE
-  # Streng fuer CI/CD (blockend, wenn p=none oder SPF ohne -all):
-  .\Check-MailDns.ps1 -ApiBase "https://.../api/v1" -Domains "a.de","b.de" -Strict -Summary
-
-.EXAMPLE
-  # Domains automatisch ueber list_zones ziehen (z. B. alle unter rwth-aachen.de):
-  .\Check-MailDns.ps1 -ApiBase "https://.../api/v1" -DomainSearch "*.rwth-aachen.de" -Summary
+  # Kombination aus manueller Liste und dynamischer Suchanfrage:
+  $domains = Get-Content .\domains.txt
+  .\Check-MailDns.ps1 -ApiBase "https://.../api/v1" -Domains $domains -DomainSearch "*.rwth-aachen.de" -Summary
 
 .NOTES
-  - Kompatibel mit Windows PowerShell 5.1 und PowerShell 7+.
-  - Datei als UTF-8 speichern. Konsole wird auf UTF-8 umgestellt; Konsolenstrings sind ASCII, um Anzeigeprobleme zu vermeiden.
-  - Exitcodes: 0 OK | 1 WARN | 2 FAIL
+  - Funktioniert mit Windows PowerShell 5.1 und PowerShell 7+.
+  - Scriptdatei als UTF-8 speichern. Konsolenstrings sind bewusst ASCII, damit
+    Umlaute keine Darstellungsfehler verursachen.
+  - Exitcodes: 0 (alles ok) | 1 (nur Warnungen) | 2 (mind. ein Fehler)
 #>
 
 [CmdletBinding(PositionalBinding=$false)]
@@ -108,12 +114,15 @@ param(
   [switch]$Summary
 )
 
-# --- UTF-8/Codepage: stabile Ausgabe, aber Konsolen-Strings bleiben ASCII -----
+# ============================================================================
+# SECTION 1 - Konsoleneinstellungen und Grundkonfiguration
+#   Dieser Block stellt die Codepage auf UTF-8 um und prueft, ob die
+#   wichtigsten Pflichtparameter gesetzt sind. Nur so koennen nachfolgende
+#   HTTP-Aufrufe reproduzierbar funktionieren.
+# ============================================================================
 try { chcp 65001 | Out-Null } catch {}
 try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() } catch {}
-# Hinweis: Manche Hosts ignorieren das. Darum vermeiden wir Umlaute in Write-Host-Strings.
 
-# --- Grundsetup & Guards ------------------------------------------------------
 $ErrorActionPreference = 'Stop'
 if ([string]::IsNullOrWhiteSpace($ApiToken)) {
   throw 'API-Token fehlt. Uebergib -ApiToken oder setze DNS_API_TOKEN.'
@@ -121,11 +130,22 @@ if ([string]::IsNullOrWhiteSpace($ApiToken)) {
 $Headers = @{ 'Authorization' = "Basic $ApiToken" }
 $ApiBase = $ApiBase.TrimEnd('/')
 
-# --- Logging-Helfer (einheitlich, steuerbar) ---------------------------------
-function Write-DebugHttp([string]$msg) { if ($DebugHttp) { Write-Verbose $msg } }
-function Write-Info([string]$msg)     { Write-Verbose $msg }
+# ============================================================================
+# SECTION 2 - Logging-Helfer
+#   Einheitliche Wrapper, damit saemtliche Debug-Ausgaben an einer Stelle
+#   kontrolliert werden. Besonders hilfreich, wenn Lernende verstehen wollen,
+#   welche HTTP-Aufrufe gerade passieren.
+# ============================================================================
+function Write-DebugHttp([string]$Message) { if ($DebugHttp) { Write-Verbose $Message } }
+function Write-Info([string]$Message)     { Write-Verbose $Message }
 
-# --- HTTP-Wrapper: Body-first (doc-konform), QS-Fallback ----------------------
+# ============================================================================
+# SECTION 3 - HTTP-Hilfsfunktionen
+#   Die RWTH-DNS-API akzeptiert GET-Anfragen entweder mit Request-Body oder
+#   Query-String. Wir probieren stets erst die dokumentierte Variante (Body)
+#   und greifen bei Bedarf auf Query-String zurueck. Die Funktionen werden in
+#   allen spaeteren Abfragen wiederverwendet.
+# ============================================================================
 function Invoke-ApiBody {
   param([Parameter(Mandatory=$true)][string]$Path, [hashtable]$Form)
   $uri = "$ApiBase/$Path"
@@ -140,7 +160,7 @@ function Invoke-ApiQS {
     $pairs = New-Object System.Collections.Generic.List[string]
     foreach ($kv in $Form.GetEnumerator()) {
       $val    = [string]$kv.Value
-      # WICHTIG: '*' NICHT URL-encodieren, da Doku die Wildcard woertlich erwartet
+      # Die API erwartet Wildcards als Sternchen, daher wird * nicht encodiert.
       $valEnc = [System.Uri]::EscapeDataString($val).Replace('%2A','*')
       $pairs.Add('{0}={1}' -f $kv.Key,$valEnc)
     }
@@ -151,7 +171,11 @@ function Invoke-ApiQS {
   Invoke-RestMethod -Method GET -Uri $uriQS -Headers $Headers -ErrorAction Stop
 }
 
-# --- Preflight: prueft Token & Basis-Konnektivitaet -----------------------------
+# ============================================================================
+# SECTION 4 - API-Grundtest (Token gueltig? Zonen abrufbar?)
+#   Bevor wir echte Arbeit investieren, prueft dieser Block, ob Token und
+#   Basis-URL funktionieren. Die Rueckmeldungen erscheinen mit -Verbose.
+# ============================================================================
 function Test-ApiConnectivity {
   try {
     $info = Invoke-ApiBody -Path 'get_api_token_info' -Form $null
@@ -167,22 +191,21 @@ function Test-ApiConnectivity {
 }
 Test-ApiConnectivity
 
-# --- Utilities: Suchmuster, Textbereinigung, FQDN usw. ------------------------
+# ============================================================================
+# SECTION 5 - Utility-Funktionen fuer Textaufbereitung und Suchmuster
+#   Diese Funktionen bereiten Rohdaten der API auf (Semikola entfernen,
+#   Wildcards erzeugen, Punkt am Ende abschneiden). Dadurch wird das Matching
+#   spaeter deutlich leichter nachvollziehbar.
+# ============================================================================
 function Format-SearchPattern {
-  <#
-    Erzeugt ein Wildcard-Suchmuster: "abc" -> "*abc*".
-    Wenn bereits Wildcards enthalten sind, wird der Text unveraendert zurueckgegeben.
-  #>
+  <# "abc" -> "*abc*"; bereits vorhandene Wildcards bleiben erhalten. #>
   param([string]$InputText)
   if ([string]::IsNullOrWhiteSpace($InputText)) { return '*' }
   if ($InputText.Contains('*')) { return $InputText }
   '*{0}*' -f $InputText
 }
 function Remove-Comment {
-  <#
-    Entfernt Kommentare ab Semikolon (;) - aber NICHT innerhalb von Anfuehrungszeichen.
-    Hintergrund: TXT-Records enthalten oft Semikola in Werten; die sind Teil des Inhalts.
-  #>
+  <# Schneidet Kommentare (;) ausserhalb von Anfuehrungszeichen ab. #>
   param([string]$InputText)
   if ($null -eq $InputText) { return $InputText }
   $inQ = $false
@@ -195,32 +218,24 @@ function Remove-Comment {
   $sb.ToString().Trim()
 }
 function Remove-TrailingDot {
-  <#
-    Entfernt den abschliessenden Punkt eines FQDN ("example.com.") -> "example.com"
-    (DNS-Notation erlaubt/erwartet oft einen finalen Punkt, der fuers Matching stoeren kann)
-  #>
+  <# DNS-Notation erlaubt einen Punkt am Ende (example.com.). Wir entfernen ihn. #>
   param([string]$Fqdn)
   if ($null -eq $Fqdn) { return $Fqdn }
   $Fqdn.TrimEnd('.')
 }
 function ConvertTo-CleanArray {
-  <#
-    Sorgt dafuer, dass wir ein "sauberes" Array ohne $null/'' zurueckgeben.
-    Wird spaeter zusaetzlich ueber den "unary comma" ,(...) IMMER als Array serialisiert.
-  #>
+  <# Stellt sicher, dass JSON-Arrays keine $null oder Leerstrings enthalten. #>
   param($InputObject)
   @($InputObject) | Where-Object { $_ -ne $null -and $_ -ne '' }
 }
 
-# --- Zonen & Records aus der API ziehen (mit robusten Fallbacks) ---------------
+# ============================================================================
+# SECTION 6 - Zonen- und Recordabfragen
+#   Hier sitzt die komplette Logik, um list_zones und list_records robust gegen
+#   API-Eigenheiten zu machen. Auszubildende koennen sehen, welche Fallbacks
+#   greifen, wenn ein Request-Typ nicht funktioniert.
+# ============================================================================
 function Get-Zones {
-  <#
-    Zieht Zonen aus der API. Probiert:
-      1) Body mit search=<pattern>
-      2) QueryString mit search=<pattern>
-      3) jeweils mit "*" (breite Suche)
-      4) ohne Parameter (voller Dump)
-  #>
   param([string]$Search='*')
   $Search = Format-SearchPattern $Search
 
@@ -245,11 +260,6 @@ function Get-Zones {
 }
 
 function Get-PrimaryZoneForFqdn {
-  <#
-    Findet die "beste" (laengst-passende) Zone fuer eine FQDN.
-    Beispiel: FQDN "mail.itc.rwth-aachen.de" -> Zone "itc.rwth-aachen.de".
-    Fallback: Testet auch nur die letzten zwei Labels (example.tld), falls noetig.
-  #>
   param([Parameter(Mandatory=$true)][string]$Fqdn)
   $fq = $Fqdn.TrimEnd('.').ToLower()
 
@@ -275,11 +285,137 @@ function Get-PrimaryZoneForFqdn {
   $best
 }
 
+function Find-Records {
+  param([Parameter(Mandatory=$true)][string]$Search,[Nullable[int]]$ZoneId = $null)
+  $form = @{ search = (Format-SearchPattern $Search) }
+  if ($ZoneId) { $form.zone_id = [int]$ZoneId }
+
+  try { $res = @( Invoke-ApiBody -Path 'list_records' -Form $form ) } catch { $res=@() }
+  if ($res.Count -eq 0) {
+    try { $res = @( Invoke-ApiQS   -Path 'list_records' -Form $form ) } catch { $res=@() }
+  }
+
+  $items = @($res)
+  if (-not $IncludeDrafts) {
+    $items = $items | Where-Object {
+      ($_.PSObject.Properties.Name -contains 'status' -and $_.status -eq 'deployed') -or
+      -not ($_.PSObject.Properties.Name -contains 'status')
+    }
+  }
+  $items
+}
+
+# ============================================================================
+# SECTION 7 - Regexe und Einzelpruefungen
+#   Die folgenden Pruefungen decken die benoetigten Mail-Records ab. Jede
+#   Funktion verarbeitet genau einen Record-Typ und liefert strukturierte
+#   Informationen fuer die spaetere Bewertung.
+# ============================================================================
+$reMX     = [regex] '^\s*(?<name>\S+)\s+(?:(?<ttl>\d+)\s+)?IN\s+MX\s+(?<pref>\d+)\s+(?<target>\S+)'
+$reTXT    = [regex] '\sIN\sTXT\s'
+$reSRV    = [regex] '\sIN\sSRV\s+(?<prio>\d+)\s+(?<weight>\d+)\s+(?<port>\d+)\s+(?<target>\S+)'
+$reDMARCp = [regex] '(?i)\bp\s*=\s*(?<p>none|quarantine|reject)\b'
+$reSPFAll = [regex] '(?i)\s-all\b'
+
+function Test-MX {
+  param([string]$Domain,[int]$ZoneId)
+  $hits = @()
+  foreach ($r in (Find-Records -Search $Domain -ZoneId $ZoneId)) {
+    $line = Remove-Comment $r.content
+    if ($reMX.IsMatch($line) -and $line -match "(^|\s)$([Regex]::Escape($Domain))(\.|\s)") {
+      $m=$reMX.Match($line)
+      $hits += [pscustomobject]@{
+        record_id=$r.id
+        name   =(Remove-TrailingDot $m.Groups['name'].Value)
+        pref   =[int]$m.Groups['pref'].Value
+        target =(Remove-TrailingDot $m.Groups['target'].Value)
+        raw    =$line
+      }
+    }
+  }
+  $hits
+}
+function Test-SPF {
+  param([string]$Domain,[int]$ZoneId)
+  $hits = @()
+  foreach ($r in (Find-Records -Search $Domain -ZoneId $ZoneId)) {
+    $line = Remove-Comment $r.content
+    if ($reTXT.IsMatch($line) -and $line -match '(?i)v=spf1') { $hits += $line }
+  }
+  $conc = ($hits -join ' ')
+  @{
+    present   = (@($hits).Count -gt 0)
+    warnNoAll = (-not (@($hits).Count -eq 0) -and -not ($conc -match $reSPFAll))
+    found     = @($hits)
+  }
+}
+function Test-DMARC {
+  param([string]$Domain,[int]$ZoneId)
+  $hits = @()
+  foreach ($r in (Find-Records -Search ("_dmarc.$Domain") -ZoneId $ZoneId)) {
+    $line = Remove-Comment $r.content
+    if ($reTXT.IsMatch($line) -and $line -match '(?i)v=DMARC1') {
+      $p = $null
+      if ($reDMARCp.IsMatch($line)) { $p = $reDMARCp.Match($line).Groups['p'].Value.ToLower() }
+      $hits += [pscustomobject]@{record_id=$r.id; policy=$p; raw=$line}
+    }
+  }
+  $pols = @($hits | Where-Object { $_.policy } | ForEach-Object { $_.policy })
+  @{
+    present    = (@($hits).Count -gt 0)
+    policyWarn = ($pols -and ($pols -contains 'none'))
+    found      = @($hits | ForEach-Object { $_.raw })
+  }
+}
+function Test-DKIM {
+  param([string]$Domain,[int]$DomainZoneId,[string]$AltRoot)
+  $hits = @()
+  foreach ($r in (Find-Records -Search ("_domainkey.$Domain") -ZoneId $DomainZoneId)) {
+    $line=Remove-Comment $r.content
+    $isTxt   = ($line -match '_domainkey') -and ($line -match '\sIN\sTXT\s') -and ( ($line -match '(?i)v=DKIM1') -or ($line -match '\bp=') )
+    $isCname = ($line -match '_domainkey') -and ($line -match '\sIN\sCNAME\s')
+    if ($isTxt -or $isCname) { $hits += $line }
+  }
+  if (-not [string]::IsNullOrWhiteSpace($AltRoot)) {
+    $alt = Get-PrimaryZoneForFqdn -Fqdn $AltRoot
+    if ($alt) {
+      foreach ($r in (Find-Records -Search ("_domainkey.$AltRoot") -ZoneId ([int]$alt.id))) {
+        $line=Remove-Comment $r.content
+        $isTxt   = ($line -match '_domainkey') -and ($line -match '\sIN\sTXT\s') -and ( ($line -match '(?i)v=DKIM1') -or ($line -match '\bp=') )
+        $isCname = ($line -match '_domainkey') -and ($line -match '\sIN\sCNAME\s')
+        if ($isTxt -or $isCname) { $hits += $line }
+      }
+    }
+  }
+  @{ present = (@($hits).Count -gt 0); found = @($hits) }
+}
+function Test-SRV443 {
+  param([string]$Domain,[int]$ZoneId)
+  $hits = @()
+  foreach ($r in (Find-Records -Search ("_autodiscover._tcp.$Domain") -ZoneId $ZoneId)) {
+    $line=Remove-Comment $r.content
+    if ($reSRV.IsMatch($line)) {
+      $m=$reSRV.Match($line)
+      $hits += [pscustomobject]@{
+        record_id=$r.id
+        port  =[int]$m.Groups['port'].Value
+        target=(Remove-TrailingDot $m.Groups['target'].Value)
+        raw   =$line
+      }
+    }
+  }
+  $present   = (@($hits).Count -gt 0)
+  $wrongPort = $false
+  if ($present) { $wrongPort = -not ($hits | Where-Object { $_.port -eq 443 }) }
+  @{ present=$present; wrongPort=$wrongPort; found = @($hits | ForEach-Object { $_.raw }) }
+}
+
+# ============================================================================
+# SECTION 8 - Domainlisten aufbereiten und Einzelberichte generieren
+#   Dieser Abschnitt kombiniert alle Bausteine: wir erzeugen eine eindeutige
+#   Liste zu pruefender Domains und erzeugen fuer jeden Eintrag ein Reportobjekt.
+# ============================================================================
 function Resolve-DomainList {
-  <#
-    Kombiniert explizite Domains und Suchmuster fuer list_zones zu einer eindeutigen
-    Pruefliste. Domains werden ohne abschliessenden Punkt gespeichert.
-  #>
   param([string[]]$Manual,[string[]]$SearchPatterns)
 
   $result = New-Object System.Collections.Generic.List[string]
@@ -315,185 +451,67 @@ function Resolve-DomainList {
   $result
 }
 
-function Find-Records {
-  <#
-    Sucht Records ueber die API. Optional wird die Suche auf eine Zone-ID eingeschraenkt
-    (performanter/gezielter). Standardmaessig werden nur "deployed" Records geliefert,
-    ausser -IncludeDrafts ist gesetzt.
-  #>
-  param([Parameter(Mandatory=$true)][string]$Search,[Nullable[int]]$ZoneId = $null)
-  $form = @{ search = (Format-SearchPattern $Search) }
-  if ($ZoneId) { $form.zone_id = [int]$ZoneId }
+function Invoke-DomainAudit {
+  param(
+    [Parameter(Mandatory=$true)][string]$Domain,
+    [Parameter(Mandatory=$true)][string]$AltRootValue,
+    [switch]$StrictMode,
+    [switch]$VerboseZoneInfo
+  )
 
-  try { $res = @( Invoke-ApiBody -Path 'list_records' -Form $form ) } catch { $res=@() }
-  if ($res.Count -eq 0) {
-    try { $res = @( Invoke-ApiQS   -Path 'list_records' -Form $form ) } catch { $res=@() }
-  }
+  $canonical = $Domain.Trim().TrimEnd('.')
+  Write-Host ('Pruefe {0} ...' -f $canonical) -ForegroundColor Cyan
 
-  $items = @($res)
-  if (-not $IncludeDrafts) {
-    $items = $items | Where-Object {
-      ($_.PSObject.Properties.Name -contains 'status' -and $_.status -eq 'deployed') -or
-      -not ($_.PSObject.Properties.Name -contains 'status')
+  $zone = Get-PrimaryZoneForFqdn -Fqdn $canonical
+  if ($VerboseZoneInfo) {
+    if ($zone) {
+      Write-Verbose ('Zone: {0} (#{1}) dnssec={2} status={3}' -f $zone.zone_name,$zone.id,$zone.dnssec,$zone.status)
+    } else {
+      Write-Warning 'Keine passende Zone gefunden.'
     }
   }
-  $items
-}
 
-# --- Regex-Parser fuer die Record-Formate (robust & kommentiert) ---------------
-# Beispiel-Zeile (MX):
-#   mustereinrichtung.rwth-aachen.de. IN MX 4422 mx1.rz.rwth-aachen.de.
-$reMX     = [regex] '^\s*(?<name>\S+)\s+(?:(?<ttl>\d+)\s+)?IN\s+MX\s+(?<pref>\d+)\s+(?<target>\S+)'
-# TXT-Erkennung (wir pruefen Inhalte separat auf v=spf1 / v=DMARC1)
-$reTXT    = [regex] '\sIN\sTXT\s'
-# SRV-Zeile (Port extrahieren, fuer 443-Check)
-$reSRV    = [regex] '\sIN\sSRV\s+(?<prio>\d+)\s+(?<weight>\d+)\s+(?<port>\d+)\s+(?<target>\S+)'
-# DMARC-Richtlinie p=
-$reDMARCp = [regex] '(?i)\bp\s*=\s*(?<p>none|quarantine|reject)\b'
-# SPF muss -all enthalten, sonst nur WARN (oder FAIL mit -Strict)
-$reSPFAll = [regex] '(?i)\s-all\b'
-
-# --- Einzelfunktions-Checks ---------------------------------------------------
-function Test-MX {
-  <# Sucht MX-Records, deren Name zur Domain passt. #>
-  param([string]$Domain,[int]$ZoneId)
-  $hits = @()
-  foreach ($r in (Find-Records -Search $Domain -ZoneId $ZoneId)) {
-    $line = Remove-Comment $r.content
-    if ($reMX.IsMatch($line) -and $line -match "(^|\s)$([Regex]::Escape($Domain))(\.|\s)") {
-      $m=$reMX.Match($line)
-      $hits += [pscustomobject]@{
-        record_id=$r.id
-        name   =(Remove-TrailingDot $m.Groups['name'].Value)
-        pref   =[int]$m.Groups['pref'].Value
-        target =(Remove-TrailingDot $m.Groups['target'].Value)
-        raw    =$line
-      }
-    }
-  }
-  $hits
-@@ -333,199 +387,205 @@ function Test-SPF {
-    warnNoAll = (-not (@($hits).Count -eq 0) -and -not ($conc -match $reSPFAll))
-    found     = @($hits)
-  }
-}
-function Test-DMARC {
-  <# Sucht TXT-Record v=DMARC1 unter _dmarc.<domain>; liest p=none/quarantine/reject aus. #>
-  param([string]$Domain,[int]$ZoneId)
-  $hits = @()
-  foreach ($r in (Find-Records -Search ("_dmarc.$Domain") -ZoneId $ZoneId)) {
-    $line = Remove-Comment $r.content
-    if ($reTXT.IsMatch($line) -and $line -match '(?i)v=DMARC1') {
-      $p = $null
-      if ($reDMARCp.IsMatch($line)) { $p = $reDMARCp.Match($line).Groups['p'].Value.ToLower() }
-      $hits += [pscustomobject]@{record_id=$r.id; policy=$p; raw=$line}
-    }
-  }
-  $pols = @($hits | Where-Object { $_.policy } | ForEach-Object { $_.policy })
-  @{
-    present    = (@($hits).Count -gt 0)
-    policyWarn = ($pols -and ($pols -contains 'none'))  # p=none -> WARN (oder FAIL mit -Strict)
-    found      = @($hits | ForEach-Object { $_.raw })
-  }
-}
-function Test-DKIM {
-  <#
-    Sucht DKIM unter *_domainkey.<domain> (TXT/CNAME, TXT enthaelt i. d. R. v=DKIM1/p=),
-    zusaetzlich optional unter *_domainkey.<AltRoot> (zentrale Delegation).
-  #>
-  param([string]$Domain,[int]$DomainZoneId,[string]$AltRoot)
-  $hits = @()
-  foreach ($r in (Find-Records -Search ("_domainkey.$Domain") -ZoneId $DomainZoneId)) {
-    $line=Remove-Comment $r.content
-    $isTxt   = ($line -match '_domainkey') -and ($line -match '\sIN\sTXT\s') -and ( ($line -match '(?i)v=DKIM1') -or ($line -match '\bp=') )
-    $isCname = ($line -match '_domainkey') -and ($line -match '\sIN\sCNAME\s')
-    if ($isTxt -or $isCname) { $hits += $line }
-  }
-  if (-not [string]::IsNullOrWhiteSpace($AltRoot)) {
-    $alt = Get-PrimaryZoneForFqdn -Fqdn $AltRoot
-    if ($alt) {
-      foreach ($r in (Find-Records -Search ("_domainkey.$AltRoot") -ZoneId ([int]$alt.id))) {
-        $line=Remove-Comment $r.content
-        $isTxt   = ($line -match '_domainkey') -and ($line -match '\sIN\sTXT\s') -and ( ($line -match '(?i)v=DKIM1') -or ($line -match '\bp=') )
-        $isCname = ($line -match '_domainkey') -and ($line -match '\sIN\sCNAME\s')
-        if ($isTxt -or $isCname) { $hits += $line }
-      }
-    }
-  }
-  @{ present = (@($hits).Count -gt 0); found = @($hits) }
-}
-function Test-SRV443 {
-  <# Sucht Autodiscover-SRV auf Port 443. #>
-  param([string]$Domain,[int]$ZoneId)
-  $hits = @()
-  foreach ($r in (Find-Records -Search ("_autodiscover._tcp.$Domain") -ZoneId $ZoneId)) {
-    $line=Remove-Comment $r.content
-    if ($reSRV.IsMatch($line)) {
-      $m=$reSRV.Match($line)
-      $hits += [pscustomobject]@{
-        record_id=$r.id
-        port  =[int]$m.Groups['port'].Value
-        target=(Remove-TrailingDot $m.Groups['target'].Value)
-        raw   =$line
-      }
-    }
-  }
-  $present   = (@($hits).Count -gt 0)
-  $wrongPort = $false
-  if ($present) { $wrongPort = -not ($hits | Where-Object { $_.port -eq 443 }) }
-  @{ present=$present; wrongPort=$wrongPort; found = @($hits | ForEach-Object { $_.raw }) }
-}
-
-# --- Hauptlauf: je Domain Zone finden -> Checks -> Bewertung -> Report --------
-$domainInputs = Resolve-DomainList -Manual $Domains -SearchPatterns $DomainSearch
-if ($domainInputs.Count -eq 0) {
-  throw 'Keine Domains gefunden. Uebergib -Domains oder -DomainSearch.'
-}
-Write-Verbose ('Starte Checks fuer {0} Domains.' -f $domainInputs.Count)
-
-$domainReports = @()
-
-foreach ($d0 in $domainInputs) {
-  $d = $d0.Trim().TrimEnd('.')
-  # ASCII, damit jede Konsole es sicher darstellt:
-  Write-Host ('Pruefe {0} ...' -f $d) -ForegroundColor Cyan
-
-  # 1) Zone bestimmen (beste Uebereinstimmung)
-  $zone = Get-PrimaryZoneForFqdn -Fqdn $d
-  if ($VerboseZones) {
-    if ($zone) { Write-Verbose ('Zone: {0} (#{1}) dnssec={2} status={3}' -f $zone.zone_name,$zone.id,$zone.dnssec,$zone.status) }
-    else { Write-Warning 'Keine passende Zone gefunden.' }
-  }
-
-  # 2) Default-Struktur fuer Checks
   $mx   = @()
   $spf  = @{ present=$false; warnNoAll=$false; found=$null }
   $dmarc= @{ present=$false; policyWarn=$false; found=$null }
   $dkim = @{ present=$false; found=$null }
   $srv  = @{ present=$false; wrongPort=$false; found=$null }
 
-  # 3) Checks ausfuehren (mit Zone -> praeziser; ohne Zone -> best effort)
   if ($zone) {
     $zoneId = [int]$zone.id
-    $mx     = Test-MX     -Domain $d -ZoneId $zoneId
-    $spf    = Test-SPF    -Domain $d -ZoneId $zoneId
-    $dmarc  = Test-DMARC  -Domain $d -ZoneId $zoneId
-    $dkim   = Test-DKIM   -Domain $d -DomainZoneId $zoneId -AltRoot $AltRoot
-    $srv    = Test-SRV443 -Domain $d -ZoneId $zoneId
+    $mx     = Test-MX     -Domain $canonical -ZoneId $zoneId
+    $spf    = Test-SPF    -Domain $canonical -ZoneId $zoneId
+    $dmarc  = Test-DMARC  -Domain $canonical -ZoneId $zoneId
+    $dkim   = Test-DKIM   -Domain $canonical -DomainZoneId $zoneId -AltRoot $AltRootValue
+    $srv    = Test-SRV443 -Domain $canonical -ZoneId $zoneId
   } else {
     Write-Warning '[Fallback] Suche ohne zone_id - Ergebnisse koennen unvollstaendig sein.'
-    $mx = @( Find-Records -Search $d | ForEach-Object { $ln=Remove-Comment $_.content; if($ln -match '\sIN\sMX\s'){ [pscustomobject]@{ raw=$ln } } } )
-    $sHits = @( Find-Records -Search $d | ForEach-Object { $ln=Remove-Comment $_.content; if($ln -match '\sIN\sTXT\s' -and $ln -match '(?i)v=spf1'){ $ln } } )
+    $mx = @( Find-Records -Search $canonical | ForEach-Object {
+              $ln=Remove-Comment $_.content
+              if($ln -match '\sIN\sMX\s'){ [pscustomobject]@{ raw=$ln } }
+            })
+    $sHits = @( Find-Records -Search $canonical | ForEach-Object {
+                $ln=Remove-Comment $_.content
+                if($ln -match '\sIN\sTXT\s' -and $ln -match '(?i)v=spf1'){ $ln }
+              })
     if ($sHits.Count -gt 0) { $spf.present=$true; $spf.found=$sHits; $spf.warnNoAll = -not (($sHits -join ' ') -match $reSPFAll) }
-    $dmHits = @( Find-Records -Search ("_dmarc.$d") | ForEach-Object { $ln=Remove-Comment $_.content; if($ln -match '\sIN\sTXT\s' -and $ln -match '(?i)v=DMARC1'){ $ln } } )
+    $dmHits = @( Find-Records -Search ("_dmarc.$canonical") | ForEach-Object {
+                 $ln=Remove-Comment $_.content
+                 if($ln -match '\sIN\sTXT\s' -and $ln -match '(?i)v=DMARC1'){ $ln }
+               })
     $dmarc.present=($dmHits.Count -gt 0); $dmarc.found=$dmHits; $dmarc.policyWarn = (($dmHits -join ' ') -match '(?i)\bp\s*=\s*none\b')
-    $dkHits = @( (Find-Records -Search ("_domainkey.$d")) + (Find-Records -Search ("_domainkey.$AltRoot")) | ForEach-Object { $ln=Remove-Comment $_.content; if($ln -match '_domainkey' -and ( ($ln -match '\sIN\sTXT\s' -and ($ln -match '(?i)v=DKIM1' -or $ln -match '\bp=')) -or ($ln -match '\sIN\sCNAME\s') )){ $ln } } )
+    $dkHits = @( (Find-Records -Search ("_domainkey.$canonical")) + (Find-Records -Search ("_domainkey.$AltRootValue")) | ForEach-Object {
+                  $ln=Remove-Comment $_.content
+                  if($ln -match '_domainkey' -and ( ($ln -match '\sIN\sTXT\s' -and ($ln -match '(?i)v=DKIM1' -or $ln -match '\bp=')) -or ($ln -match '\sIN\sCNAME\s') )){ $ln }
+                })
     if ($dkHits.Count -gt 0){ $dkim.present=$true; $dkim.found=$dkHits }
-    $srvHits = @( Find-Records -Search ("_autodiscover._tcp.$d") | ForEach-Object { $ln=Remove-Comment $_.content; if($ln -match '\sIN\sSRV\s+\d+\s+\d+\s+443\s+\S+'){ $ln } } )
+    $srvHits = @( Find-Records -Search ("_autodiscover._tcp.$canonical") | ForEach-Object {
+                 $ln=Remove-Comment $_.content
+                 if($ln -match '\sIN\sSRV\s+\d+\s+\d+\s+443\s+\S+'){ $ln }
+               })
     if ($srvHits.Count -gt 0){ $srv.present=$true; $srv.found=$srvHits }
   }
 
-  # 4) Bewertung (OK / WARN / FAIL)
   $fail = @()
   $warn = @()
   if (-not @($mx).Count) { $fail += 'mx' }
@@ -502,8 +520,7 @@ foreach ($d0 in $domainInputs) {
   if (-not $dkim.present) { $fail += 'dkim' }
   if (-not $srv.present)  { $fail += 'srv' } elseif ($srv.wrongPort) { $fail += 'srv:port!=443' }
 
-  # Strenger Modus: manche WARNs werden zu FAIL
-  if ($Strict) {
+  if ($StrictMode) {
     if ($warn -contains 'spf:no -all')  { $fail += 'spf:no -all';  $warn = $warn | Where-Object { $_ -ne 'spf:no -all' } }
     if ($warn -contains 'dmarc:p=none') { $fail += 'dmarc:p=none'; $warn = $warn | Where-Object { $_ -ne 'dmarc:p=none' } }
   }
@@ -512,9 +529,8 @@ foreach ($d0 in $domainInputs) {
   if     ($fail.Count -gt 0) { $status = 'FAIL: ' + ($fail -join ', ') }
   elseif ($warn.Count -gt 0) { $status = 'WARN: ' + ($warn -join ', ') }
 
-  # 5) Reportobjekt (JSON-stabil: found IMMER als Array dank unary comma)
-  $domainReports += [pscustomobject]@{
-    domain = $d
+  [pscustomobject]@{
+    domain = $canonical
     status = $status
     checks = [pscustomobject]@{
       mx     = @{ present = (@($mx).Count -gt 0);                     found = ,(ConvertTo-CleanArray ($mx | ForEach-Object { $_.raw })) }
@@ -526,7 +542,22 @@ foreach ($d0 in $domainInputs) {
   }
 }
 
-# --- Optionale Menschentabelle (fuer Praesentation/Logs) ------------------------
+$domainInputs = Resolve-DomainList -Manual $Domains -SearchPatterns $DomainSearch
+if ($domainInputs.Count -eq 0) {
+  throw 'Keine Domains gefunden. Uebergib -Domains oder -DomainSearch.'
+}
+Write-Verbose ('Starte Checks fuer {0} Domains.' -f $domainInputs.Count)
+
+$domainReports = foreach ($domain in $domainInputs) {
+  Invoke-DomainAudit -Domain $domain -AltRootValue $AltRoot -StrictMode:$Strict -VerboseZoneInfo:$VerboseZones
+}
+
+# ============================================================================
+# SECTION 9 - Zusammenfassung und Ausgabe
+#   Die Ergebnisse werden zunaechst auf Wunsch als Tabelle dargestellt und
+#   anschliessend als JSON ausgegeben. So koennen Menschen wie Maschinen mit den
+#   Resultaten arbeiten.
+# ============================================================================
 if ($Summary) {
   Write-Host "`n=== Zusammenfassung ===`n" -ForegroundColor Cyan
   $rows = foreach ($r in $domainReports) {
@@ -554,7 +585,6 @@ if ($Summary) {
   Write-Host ''
 }
 
-# --- JSON-Ausgabe + Datei (UTF-8) ---------------------------------------------
 $report = [pscustomobject]@{
   timestamp = (Get-Date).ToUniversalTime().ToString('o')
   results   = $domainReports
@@ -571,7 +601,11 @@ if ($OutputJson -and $OutputJson.Trim()) {
   Write-Verbose ('Report gespeichert unter {0}' -f $OutputJson)
 }
 
-# --- Exitcode fuer CI/CD -------------------------------------------------------
+# ============================================================================
+# SECTION 10 - Exitcodes fuer Automatisierung
+#   Die Rueckgabewerte orientieren sich an klassischen CI/CD-Konventionen, damit
+#   Pipelines das Ergebnis direkt auswerten koennen.
+# ============================================================================
 $hasFail = $domainReports | Where-Object { $_.status -like 'FAIL*' }
 $hasWarn = $domainReports | Where-Object { $_.status -like 'WARN*' }
 
