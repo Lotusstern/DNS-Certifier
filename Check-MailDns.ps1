@@ -24,6 +24,24 @@
       DKIM (TXT/CNAME *_domainkey.*)       -> Signaturschluessel oder Delegation
       SRV  _autodiscover._tcp.<domain>:443 -> Outlook Autodiscover via Port 443
 
+.CHANGELOG
+  Stand dieses Skripts nach den letzten Anpassungen:
+    - Zonenerkennung: Wir suchen nach passenden list_zones-Eintraegen ueber
+      mehrere Wildcard-Varianten, puffern die Ergebnisse und weisen jeder Domain
+      ihre beste Zone zu. Dadurch entfallen viele manuellen zone_id-Angaben und
+      Fallback-Warnungen werden seltener.
+    - Record-Suche: Die Abfragen fuer MX, SPF, DMARC, DKIM und SRV verwenden
+      gemeinsame Hilfsfunktionen, die Ergebnisse zusammenfassen, Duplikate
+      entfernen und bei Bedarf alternative Pfade (Query-String statt Body)
+      ausprobieren.
+    - DKIM-Delegation: Neben der eigentlichen Domain-Zone wird automatisch eine
+      zusaetzliche Root-Zone (Standard: rwth-aachen.de) abgefragt, damit zentral
+      verwaltete Selector-Schluessel sichtbar sind.
+    - Diagnoseoptionen: Mit -VerboseOutput (Alias -Verbose), -VerboseZones und
+      -DebugHttp lassen sich Lernsessions oder Stoerungsanalysen detailliert
+      nachverfolgen, ohne dass Standardnutzerinnen von Meldungen erschlagen
+      werden.
+
 .PARAMETER ApiBase
   Basis-URL der DNS-API (ohne Slash am Ende), z. B.:
   https://noc-portal.itc.rwth-aachen.de/dns-admin/api/v1
@@ -64,6 +82,7 @@
 .PARAMETER VerboseOutput
   Aktiviert detaillierte Fortschritts- und Zonenmeldungen fuer Lern- und
   Fehleranalysezwecke. Ohne diesen Schalter bleiben die Ausgaben bewusst kurz.
+  Alias: -Verbose
 
 .PARAMETER Strict
   Hebt einzelne Warnungen auf FAIL an:
@@ -95,6 +114,8 @@
   - Scriptdatei als UTF-8 speichern. Konsolenstrings sind bewusst ASCII, damit
     Umlaute keine Darstellungsfehler verursachen.
   - Exitcodes: 0 (alles ok) | 1 (nur Warnungen) | 2 (mind. ein Fehler)
+  - Mehrzeilige Aufrufe benoetigen einen Backtick (`) am Zeilenende, damit
+    PowerShell die Parameterliste korrekt fortsetzt.
 #>
 
 param(
@@ -109,7 +130,7 @@ param(
   [switch]$DebugHttp,
   [switch]$Strict,
   [switch]$Summary,
-  [switch]$VerboseOutput
+  [Alias('Verbose')][switch]$VerboseOutput
 )
 
 if ([string]::IsNullOrWhiteSpace($ApiBase) -or ($ApiBase -notmatch '^https?://.+')) {
@@ -135,6 +156,7 @@ $Headers = @{ 'Authorization' = "Basic $ApiToken" }
 $ApiBase = $ApiBase.TrimEnd('/')
 if ($null -eq $Domains) { $Domains = @() }
 if ($null -eq $DomainSearch) { $DomainSearch = @() }
+if (-not $script:AltRootZoneCache) { $script:AltRootZoneCache = @{} }
 
 # ============================================================================
 # SECTION 2 - Logging-Helfer
@@ -287,6 +309,13 @@ function Expand-InputCollection {
 function Get-Zones {
   param([string]$Search='*')
 
+  if (-not $script:ZoneCache) { $script:ZoneCache = @{} }
+
+  $cacheKey = if ([string]::IsNullOrWhiteSpace($Search)) { '*' } else { $Search }
+  if ($script:ZoneCache.ContainsKey($cacheKey)) {
+    return $script:ZoneCache[$cacheKey]
+  }
+
   $candidates = New-Object System.Collections.Generic.List[string]
   if ([string]::IsNullOrWhiteSpace($Search)) {
     $candidates.Add('*') | Out-Null
@@ -305,39 +334,58 @@ function Get-Zones {
     $finalList += '*'
   }
 
+  $results = @()
   foreach ($pattern in $finalList) {
     $form = if ($pattern -eq '*') { @{ search='*' } } else { @{ search=$pattern } }
 
     try { $res = @( Invoke-ApiBody -Path 'list_zones' -Form $form ) } catch { $res=@() }
-    if ($res.Count -gt 0) { return $res }
+    if ($res.Count -gt 0) { $results += $res }
 
     try { $res = @( Invoke-ApiQS   -Path 'list_zones' -Form $form ) } catch { $res=@() }
-    if ($res.Count -gt 0) { return $res }
+    if ($res.Count -gt 0) { $results += $res }
   }
 
-  try { $res = @( Invoke-ApiBody -Path 'list_zones' -Form $null ) } catch { $res=@() }
-  if ($res.Count -gt 0) { return $res }
+  if (-not $results) {
+    try { $results += @( Invoke-ApiBody -Path 'list_zones' -Form $null ) } catch {}
+    try { $results += @( Invoke-ApiQS   -Path 'list_zones' -Form $null ) } catch {}
+  }
 
-  try { $res = @( Invoke-ApiQS   -Path 'list_zones' -Form $null ) } catch { $res=@() }
-  $res
+  $unique = @()
+  $seen   = @{}
+  foreach ($entry in $results) {
+    $key = if ($entry.PSObject.Properties.Name -contains 'id') { "id:$($entry.id)" } else { "name:$($entry.zone_name)" }
+    if (-not $seen.ContainsKey($key)) {
+      $seen[$key] = $true
+      $unique += $entry
+    }
+  }
+
+  $script:ZoneCache[$cacheKey] = $unique
+  $unique
 }
 
 function Get-PrimaryZoneForFqdn {
   param([Parameter(Mandatory=$true)][string]$Fqdn)
   $fq = $Fqdn.TrimEnd('.').ToLower()
 
-  $cands = @( Get-Zones -Search $fq )
-  if ($cands.Count -eq 0) {
-    $parts = $fq.Split('.')
-    if ($parts.Length -ge 2) {
-      $base2 = ($parts[-2..-1] -join '.')
-      $cands = @( Get-Zones -Search $base2 )
+  $parts = $fq.Split('.')
+  $searchOrder = New-Object System.Collections.Generic.List[string]
+  for ($i = 0; $i -lt $parts.Length; $i++) {
+    $suffix = ($parts[$i..($parts.Length-1)] -join '.')
+    if (-not [string]::IsNullOrWhiteSpace($suffix)) {
+      $searchOrder.Add($suffix) | Out-Null
     }
   }
-  if ($cands.Count -eq 0) { return $null }
+  if (-not $searchOrder.Contains('*')) { $searchOrder.Add('*') | Out-Null }
+
+  $zoneCandidates = @()
+  foreach ($pattern in ($searchOrder | Select-Object -Unique)) {
+    $zoneCandidates += @( Get-Zones -Search $pattern )
+  }
+  if ($zoneCandidates.Count -eq 0) { return $null }
 
   $best = $null; $bestLen = -1
-  foreach ($z in $cands) {
+  foreach ($z in $zoneCandidates) {
     $zn = $z.zone_name; if ($null -eq $zn) { $zn = '' }
     $zn = $zn.TrimEnd('.').ToLower()
     if ($fq.EndsWith($zn) -and $zn.Length -gt $bestLen) {
@@ -349,23 +397,79 @@ function Get-PrimaryZoneForFqdn {
 }
 
 function Find-Records {
-  param([Parameter(Mandatory=$true)][string]$Search,[Nullable[int]]$ZoneId = $null)
-  $form = @{ search = (Format-SearchPattern $Search) }
-  if ($ZoneId) { $form.zone_id = [int]$ZoneId }
+  param(
+    [Parameter(Mandatory=$true)][object]$Search,
+    [Nullable[int]]$ZoneId = $null
+  )
 
-  try { $res = @( Invoke-ApiBody -Path 'list_records' -Form $form ) } catch { $res=@() }
-  if ($res.Count -eq 0) {
-    try { $res = @( Invoke-ApiQS   -Path 'list_records' -Form $form ) } catch { $res=@() }
+  $searchTerms = Expand-InputCollection -Items @($Search)
+  $searchTerms = $searchTerms | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+  if ($searchTerms.Count -eq 0) { return @() }
+
+  $collected = @()
+  foreach ($term in $searchTerms) {
+    $form = @{ search = (Format-SearchPattern $term) }
+    if ($ZoneId) { $form.zone_id = [int]$ZoneId }
+
+    try { $resBody = @( Invoke-ApiBody -Path 'list_records' -Form $form ) } catch { $resBody=@() }
+    try { $resQS   = @( Invoke-ApiQS   -Path 'list_records' -Form $form ) } catch { $resQS=@() }
+    $collected += $resBody + $resQS
   }
 
-  $items = @($res)
+  if (-not $collected) { return @() }
+
   if (-not $IncludeDrafts) {
-    $items = $items | Where-Object {
+    $collected = $collected | Where-Object {
       ($_.PSObject.Properties.Name -contains 'status' -and $_.status -eq 'deployed') -or
       -not ($_.PSObject.Properties.Name -contains 'status')
     }
   }
-  $items
+
+  $deduped = @()
+  $seen = @{}
+  foreach ($item in $collected) {
+    $identifier = if ($item.PSObject.Properties.Name -contains 'id' -and $item.id) {
+      "id:$($item.id)"
+    } elseif ($item.PSObject.Properties.Name -contains 'name') {
+      "name:$($item.name)|content:$($item.content)"
+    } else {
+      "content:$($item.content)"
+    }
+    if (-not $seen.ContainsKey($identifier)) {
+      $seen[$identifier] = $true
+      $deduped += $item
+    }
+  }
+
+  $deduped
+}
+
+function Get-RecordSearchTerms {
+  param(
+    [string]$Domain,
+    $Zone
+  )
+
+  $terms = New-Object System.Collections.Generic.List[string]
+  $canonical = $Domain.Trim().TrimEnd('.')
+  if ($canonical) { $terms.Add($canonical) | Out-Null }
+
+  if ($Zone -and ($Zone.PSObject.Properties.Name -contains 'zone_name')) {
+    $zoneName = ($Zone.zone_name -as [string])
+    $zoneName = (Remove-TrailingDot $zoneName)
+    if ($zoneName) {
+      if ($canonical.Equals($zoneName, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $terms.Add('@') | Out-Null
+      } elseif ($canonical.ToLower().EndsWith('.' + $zoneName.ToLower())) {
+        $relative = $canonical.Substring(0, $canonical.Length - $zoneName.Length - 1)
+        if (-not [string]::IsNullOrWhiteSpace($relative)) {
+          $terms.Add($relative) | Out-Null
+        }
+      }
+    }
+  }
+
+  $terms | Select-Object -Unique
 }
 
 # ============================================================================
@@ -381,9 +485,9 @@ $reDMARCp = [regex] '(?i)\bp\s*=\s*(?<p>none|quarantine|reject)\b'
 $reSPFAll = [regex] '(?i)\s-all\b'
 
 function Test-MX {
-  param([string]$Domain,[int]$ZoneId)
+  param([string]$Domain,[Nullable[int]]$ZoneId,[string[]]$SearchTerms)
   $hits = @()
-  foreach ($r in (Find-Records -Search $Domain -ZoneId $ZoneId)) {
+  foreach ($r in (Find-Records -Search $SearchTerms -ZoneId $ZoneId)) {
     $line = Remove-Comment $r.content
     if ($reMX.IsMatch($line) -and $line -match "(^|\s)$([Regex]::Escape($Domain))(\.|\s)") {
       $m=$reMX.Match($line)
@@ -399,9 +503,9 @@ function Test-MX {
   $hits
 }
 function Test-SPF {
-  param([string]$Domain,[int]$ZoneId)
+  param([string]$Domain,[Nullable[int]]$ZoneId,[string[]]$SearchTerms)
   $hits = @()
-  foreach ($r in (Find-Records -Search $Domain -ZoneId $ZoneId)) {
+  foreach ($r in (Find-Records -Search $SearchTerms -ZoneId $ZoneId)) {
     $line = Remove-Comment $r.content
     if ($reTXT.IsMatch($line) -and $line -match '(?i)v=spf1') { $hits += $line }
   }
@@ -413,9 +517,9 @@ function Test-SPF {
   }
 }
 function Test-DMARC {
-  param([string]$Domain,[int]$ZoneId)
+  param([string]$Domain,[Nullable[int]]$ZoneId,[string[]]$SearchTerms)
   $hits = @()
-  foreach ($r in (Find-Records -Search ("_dmarc.$Domain") -ZoneId $ZoneId)) {
+  foreach ($r in (Find-Records -Search ($SearchTerms | ForEach-Object { "_dmarc.$_" }) -ZoneId $ZoneId)) {
     $line = Remove-Comment $r.content
     if ($reTXT.IsMatch($line) -and $line -match '(?i)v=DMARC1') {
       $p = $null
@@ -431,31 +535,50 @@ function Test-DMARC {
   }
 }
 function Test-DKIM {
-  param([string]$Domain,[int]$DomainZoneId,[string]$AltRoot)
-  $hits = @()
-  foreach ($r in (Find-Records -Search ("_domainkey.$Domain") -ZoneId $DomainZoneId)) {
-    $line=Remove-Comment $r.content
-    $isTxt   = ($line -match '_domainkey') -and ($line -match '\sIN\sTXT\s') -and ( ($line -match '(?i)v=DKIM1') -or ($line -match '\bp=') )
-    $isCname = ($line -match '_domainkey') -and ($line -match '\sIN\sCNAME\s')
-    if ($isTxt -or $isCname) { $hits += $line }
-  }
-  if (-not [string]::IsNullOrWhiteSpace($AltRoot)) {
-    $alt = Get-PrimaryZoneForFqdn -Fqdn $AltRoot
-    if ($alt) {
-      foreach ($r in (Find-Records -Search ("_domainkey.$AltRoot") -ZoneId ([int]$alt.id))) {
-        $line=Remove-Comment $r.content
-        $isTxt   = ($line -match '_domainkey') -and ($line -match '\sIN\sTXT\s') -and ( ($line -match '(?i)v=DKIM1') -or ($line -match '\bp=') )
-        $isCname = ($line -match '_domainkey') -and ($line -match '\sIN\sCNAME\s')
-        if ($isTxt -or $isCname) { $hits += $line }
-      }
+  param([string]$Domain,[Nullable[int]]$DomainZoneId,[string]$AltRoot,[string[]]$SearchTerms)
+
+  $rawHits = New-Object System.Collections.Generic.List[string]
+
+  $dkimSearch = @()
+  $dkimSearch += ($SearchTerms | ForEach-Object { "_domainkey.$_" })
+  $dkimSearch = $dkimSearch | Where-Object { $_ } | Select-Object -Unique
+
+  if ($dkimSearch.Count -gt 0) {
+    foreach ($r in (Find-Records -Search $dkimSearch -ZoneId $DomainZoneId)) {
+      $line = Remove-Comment $r.content
+      if (-not $line) { continue }
+      $isTxt   = ($line -match '_domainkey') -and ($line -match '\sIN\sTXT\s') -and ( ($line -match '(?i)v=DKIM1') -or ($line -match '\bp=') )
+      $isCname = ($line -match '_domainkey') -and ($line -match '\sIN\sCNAME\s')
+      if ($isTxt -or $isCname) { $rawHits.Add($line) | Out-Null }
     }
   }
-  @{ present = (@($hits).Count -gt 0); found = @($hits) }
+
+  if (-not [string]::IsNullOrWhiteSpace($AltRoot)) {
+    $altKey = (Remove-TrailingDot $AltRoot).ToLower()
+    if (-not $script:AltRootZoneCache.ContainsKey($altKey)) {
+      $script:AltRootZoneCache[$altKey] = Get-PrimaryZoneForFqdn -Fqdn $AltRoot
+    }
+    $altZone   = $script:AltRootZoneCache[$altKey]
+    $altZoneId = $null
+    if ($altZone -and ($altZone.PSObject.Properties.Name -contains 'id') -and $altZone.id) {
+      $altZoneId = [int]$altZone.id
+    }
+    foreach ($r in (Find-Records -Search @("_domainkey.$AltRoot") -ZoneId $altZoneId)) {
+      $line = Remove-Comment $r.content
+      if (-not $line) { continue }
+      $isTxt   = ($line -match '_domainkey') -and ($line -match '\sIN\sTXT\s') -and ( ($line -match '(?i)v=DKIM1') -or ($line -match '\bp=') )
+      $isCname = ($line -match '_domainkey') -and ($line -match '\sIN\sCNAME\s')
+      if ($isTxt -or $isCname) { $rawHits.Add($line) | Out-Null }
+    }
+  }
+
+  $hits = $rawHits | Select-Object -Unique
+  @{ present = ($hits.Count -gt 0); found = @($hits) }
 }
 function Test-SRV443 {
-  param([string]$Domain,[int]$ZoneId)
+  param([string]$Domain,[Nullable[int]]$ZoneId,[string[]]$SearchTerms)
   $hits = @()
-  foreach ($r in (Find-Records -Search ("_autodiscover._tcp.$Domain") -ZoneId $ZoneId)) {
+  foreach ($r in (Find-Records -Search ($SearchTerms | ForEach-Object { "_autodiscover._tcp.$_" }) -ZoneId $ZoneId)) {
     $line=Remove-Comment $r.content
     if ($reSRV.IsMatch($line)) {
       $m=$reSRV.Match($line)
@@ -469,7 +592,9 @@ function Test-SRV443 {
   }
   $present   = (@($hits).Count -gt 0)
   $wrongPort = $false
-  if ($present) { $wrongPort = -not ($hits | Where-Object { $_.port -eq 443 }) }
+  if ($present) {
+    $wrongPort = -not ($hits | Where-Object { $_.port -eq 443 } | Select-Object -First 1)
+  }
   @{ present=$present; wrongPort=$wrongPort; found = @($hits | ForEach-Object { $_.raw }) }
 }
 
@@ -526,6 +651,7 @@ function Invoke-DomainAudit {
   Write-Host ('Pruefe {0} ...' -f $canonical) -ForegroundColor Cyan
 
   $zone = Get-PrimaryZoneForFqdn -Fqdn $canonical
+  $searchTerms = Get-RecordSearchTerms -Domain $canonical -Zone $zone
   if ($VerboseZoneInfo) {
     if ($zone) {
       Write-Info ('Zone: {0} (#{1}) dnssec={2} status={3}' -f $zone.zone_name,$zone.id,$zone.dnssec,$zone.status)
@@ -534,46 +660,20 @@ function Invoke-DomainAudit {
     }
   }
 
-  $mx   = @()
-  $spf  = @{ present=$false; warnNoAll=$false; found=$null }
-  $dmarc= @{ present=$false; policyWarn=$false; found=$null }
-  $dkim = @{ present=$false; found=$null }
-  $srv  = @{ present=$false; wrongPort=$false; found=$null }
-
+  $zoneId = $null
   if ($zone) {
-    $zoneId = [int]$zone.id
-    $mx     = Test-MX     -Domain $canonical -ZoneId $zoneId
-    $spf    = Test-SPF    -Domain $canonical -ZoneId $zoneId
-    $dmarc  = Test-DMARC  -Domain $canonical -ZoneId $zoneId
-    $dkim   = Test-DKIM   -Domain $canonical -DomainZoneId $zoneId -AltRoot $AltRootValue
-    $srv    = Test-SRV443 -Domain $canonical -ZoneId $zoneId
+    if ($zone.PSObject.Properties.Name -contains 'id' -and $zone.id) {
+      $zoneId = [int]$zone.id
+    }
   } else {
     Write-Warning '[Fallback] Suche ohne zone_id - Ergebnisse koennen unvollstaendig sein.'
-    $mx = @( Find-Records -Search $canonical | ForEach-Object {
-              $ln=Remove-Comment $_.content
-              if($ln -match '\sIN\sMX\s'){ [pscustomobject]@{ raw=$ln } }
-            })
-    $sHits = @( Find-Records -Search $canonical | ForEach-Object {
-                $ln=Remove-Comment $_.content
-                if($ln -match '\sIN\sTXT\s' -and $ln -match '(?i)v=spf1'){ $ln }
-              })
-    if ($sHits.Count -gt 0) { $spf.present=$true; $spf.found=$sHits; $spf.warnNoAll = -not (($sHits -join ' ') -match $reSPFAll) }
-    $dmHits = @( Find-Records -Search ("_dmarc.$canonical") | ForEach-Object {
-                 $ln=Remove-Comment $_.content
-                 if($ln -match '\sIN\sTXT\s' -and $ln -match '(?i)v=DMARC1'){ $ln }
-               })
-    $dmarc.present=($dmHits.Count -gt 0); $dmarc.found=$dmHits; $dmarc.policyWarn = (($dmHits -join ' ') -match '(?i)\bp\s*=\s*none\b')
-    $dkHits = @( (Find-Records -Search ("_domainkey.$canonical")) + (Find-Records -Search ("_domainkey.$AltRootValue")) | ForEach-Object {
-                  $ln=Remove-Comment $_.content
-                  if($ln -match '_domainkey' -and ( ($ln -match '\sIN\sTXT\s' -and ($ln -match '(?i)v=DKIM1' -or $ln -match '\bp=')) -or ($ln -match '\sIN\sCNAME\s') )){ $ln }
-                })
-    if ($dkHits.Count -gt 0){ $dkim.present=$true; $dkim.found=$dkHits }
-    $srvHits = @( Find-Records -Search ("_autodiscover._tcp.$canonical") | ForEach-Object {
-                 $ln=Remove-Comment $_.content
-                 if($ln -match '\sIN\sSRV\s+\d+\s+\d+\s+443\s+\S+'){ $ln }
-               })
-    if ($srvHits.Count -gt 0){ $srv.present=$true; $srv.found=$srvHits }
   }
+
+  $mx   = Test-MX     -Domain $canonical -ZoneId $zoneId -SearchTerms $searchTerms
+  $spf  = Test-SPF    -Domain $canonical -ZoneId $zoneId -SearchTerms $searchTerms
+  $dmarc= Test-DMARC  -Domain $canonical -ZoneId $zoneId -SearchTerms $searchTerms
+  $dkim = Test-DKIM   -Domain $canonical -DomainZoneId $zoneId -AltRoot $AltRootValue -SearchTerms $searchTerms
+  $srv  = Test-SRV443 -Domain $canonical -ZoneId $zoneId -SearchTerms $searchTerms
 
   $fail = @()
   $warn = @()
@@ -596,11 +696,11 @@ function Invoke-DomainAudit {
     domain = $canonical
     status = $status
     checks = [pscustomobject]@{
-      mx     = @{ present = (@($mx).Count -gt 0);                     found =  (ConvertTo-CleanArray ($mx | ForEach-Object { $_.raw })) }
-      spf    = @{ present = $spf.present;  warnNoAll = $spf.warnNoAll; found =  (ConvertTo-CleanArray $spf.found) }
-      dmarc  = @{ present = $dmarc.present; policyWarn = $dmarc.policyWarn; found =  (ConvertTo-CleanArray $dmarc.found) }
-      dkim   = @{ present = $dkim.present;                              found =  (ConvertTo-CleanArray $dkim.found) }
-      srv443 = @{ present = $srv.present;   wrongPort = $srv.wrongPort;  found =  (ConvertTo-CleanArray $srv.found) }
+      mx     = @{ present = (@($mx).Count -gt 0);                     found =  ([string[]](ConvertTo-CleanArray ($mx | ForEach-Object { $_.raw }))) }
+      spf    = @{ present = $spf.present;  warnNoAll = $spf.warnNoAll; found =  ([string[]](ConvertTo-CleanArray $spf.found)) }
+      dmarc  = @{ present = $dmarc.present; policyWarn = $dmarc.policyWarn; found =  ([string[]](ConvertTo-CleanArray $dmarc.found)) }
+      dkim   = @{ present = $dkim.present;                              found =  ([string[]](ConvertTo-CleanArray $dkim.found)) }
+      srv443 = @{ present = $srv.present;   wrongPort = $srv.wrongPort;  found =  ([string[]](ConvertTo-CleanArray $srv.found)) }
     }
   }
 }
