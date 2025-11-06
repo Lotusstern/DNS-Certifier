@@ -33,11 +33,14 @@
   dem Base64-kodierten Basic-Auth-String.
 
 .PARAMETER Domains
-  Eine oder mehrere FQDNs, die explizit geprueft werden sollen.
+  Eine oder mehrere FQDNs, die explizit geprueft werden sollen. Der Parameter
+  akzeptiert Strings, Arrays und Listen (z. B. Get-Content oder Import-Csv) und
+  entfernt dabei Leerzeilen sowie doppelte Eintraege automatisch.
 
 .PARAMETER DomainSearch
   Eine oder mehrere Suchmuster (Wildcards erlaubt). Die Treffer der
-  list_zones-Abfrage werden zur manuellen Liste hinzugefuegt.
+  list_zones-Abfrage werden zur manuellen Liste hinzugefuegt; auch hier duerfen
+  Arrays oder andere Auflistungen uebergeben werden.
 
 .PARAMETER OutputJson
   Optionaler Dateipfad, unter dem der JSON-Report gespeichert wird.
@@ -50,11 +53,17 @@
   Aktiviert Records im Status "draft" (Standard: nur deployed).
 
 .PARAMETER VerboseZones
-  Gibt mit -Verbose zusaetzliche Zoneninformationen (ID, DNSSEC, Status) aus.
+  Gibt zusammen mit -VerboseOutput zusaetzliche Zoneninformationen (ID, DNSSEC,
+  Status) aus.
 
 .PARAMETER DebugHttp
-  Zeigt jede HTTP-Anfrage als -Verbose Meldung an (sowohl Body- als auch
-  Query-String-Variante).
+  Zeigt jede HTTP-Anfrage farblich hervorgehoben an (sowohl Body- als auch
+  Query-String-Variante). Wenn nur -VerboseOutput verwendet wird, erscheinen
+  die Meldungen in dezenter Form.
+
+.PARAMETER VerboseOutput
+  Aktiviert detaillierte Fortschritts- und Zonenmeldungen fuer Lern- und
+  Fehleranalysezwecke. Ohne diesen Schalter bleiben die Ausgaben bewusst kurz.
 
 .PARAMETER Strict
   Hebt einzelne Warnungen auf FAIL an:
@@ -72,6 +81,11 @@
     -Summary -OutputJson .\reports\maildns.json
 
 .EXAMPLE
+  # Domains aus einer Textdatei (eine Zeile pro Domain) einlesen:
+  $domains = Get-Content .\maildomains.txt
+  .\Check-MailDns.ps1 -ApiBase "https://.../api/v1" -Domains $domains -Summary
+
+.EXAMPLE
   # Kombination aus manueller Liste und dynamischer Suchanfrage:
   $domains = Get-Content .\domains.txt
   .\Check-MailDns.ps1 -ApiBase "https://.../api/v1" -Domains $domains -DomainSearch "*.rwth-aachen.de" -Summary
@@ -83,36 +97,24 @@
   - Exitcodes: 0 (alles ok) | 1 (nur Warnungen) | 2 (mind. ein Fehler)
 #>
 
-[CmdletBinding(PositionalBinding=$false)]
 param(
-  [Parameter(Mandatory=$true)]
-  [ValidateNotNullOrEmpty()]
-  [ValidateScript({ $_ -match '^https?://.+' })]
   [string]$ApiBase,
-
-  [Parameter()]
   [string]$ApiToken = $env:DNS_API_TOKEN,
-
-  [Parameter()]
-  [ValidateNotNullOrEmpty()]
-  [string[]]$Domains,
-
-  [Parameter()]
-  [ValidateNotNullOrEmpty()]
-  [string[]]$DomainSearch,
-
-  [Parameter()]
+  [object[]]$Domains = @(),
+  [object[]]$DomainSearch = @(),
   [string]$OutputJson,
-
-  [Parameter()]
   [string]$AltRoot = 'rwth-aachen.de',
-
   [switch]$IncludeDrafts,
   [switch]$VerboseZones,
   [switch]$DebugHttp,
   [switch]$Strict,
-  [switch]$Summary
+  [switch]$Summary,
+  [switch]$VerboseOutput
 )
+
+if ([string]::IsNullOrWhiteSpace($ApiBase) -or ($ApiBase -notmatch '^https?://.+')) {
+  throw 'Parameter -ApiBase erwartet eine vollstaendige https://- oder http://-URL.'
+}
 
 # ============================================================================
 # SECTION 1 - Konsoleneinstellungen und Grundkonfiguration
@@ -120,6 +122,8 @@ param(
 #   wichtigsten Pflichtparameter gesetzt sind. Nur so koennen nachfolgende
 #   HTTP-Aufrufe reproduzierbar funktionieren.
 # ============================================================================
+$ShowVerbose = $VerboseOutput.IsPresent
+
 try { chcp 65001 | Out-Null } catch {}
 try { [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new() } catch {}
 
@@ -129,6 +133,8 @@ if ([string]::IsNullOrWhiteSpace($ApiToken)) {
 }
 $Headers = @{ 'Authorization' = "Basic $ApiToken" }
 $ApiBase = $ApiBase.TrimEnd('/')
+if ($null -eq $Domains) { $Domains = @() }
+if ($null -eq $DomainSearch) { $DomainSearch = @() }
 
 # ============================================================================
 # SECTION 2 - Logging-Helfer
@@ -136,8 +142,20 @@ $ApiBase = $ApiBase.TrimEnd('/')
 #   kontrolliert werden. Besonders hilfreich, wenn Lernende verstehen wollen,
 #   welche HTTP-Aufrufe gerade passieren.
 # ============================================================================
-function Write-DebugHttp([string]$Message) { if ($DebugHttp) { Write-Verbose $Message } }
-function Write-Info([string]$Message)     { Write-Verbose $Message }
+function Write-DebugHttp {
+  param([string]$Message)
+  if ($DebugHttp) {
+    Write-Host $Message -ForegroundColor DarkYellow
+  } elseif ($ShowVerbose) {
+    Write-Host $Message -ForegroundColor DarkGray
+  }
+}
+function Write-Info {
+  param([string]$Message)
+  if ($ShowVerbose) {
+    Write-Host $Message -ForegroundColor DarkGray
+  }
+}
 
 # ============================================================================
 # SECTION 3 - HTTP-Hilfsfunktionen
@@ -174,7 +192,7 @@ function Invoke-ApiQS {
 # ============================================================================
 # SECTION 4 - API-Grundtest (Token gueltig? Zonen abrufbar?)
 #   Bevor wir echte Arbeit investieren, prueft dieser Block, ob Token und
-#   Basis-URL funktionieren. Die Rueckmeldungen erscheinen mit -Verbose.
+#   Basis-URL funktionieren. Die Rueckmeldungen erscheinen mit -VerboseOutput.
 # ============================================================================
 function Test-ApiConnectivity {
   try {
@@ -227,6 +245,35 @@ function ConvertTo-CleanArray {
   <# Stellt sicher, dass JSON-Arrays keine $null oder Leerstrings enthalten. #>
   param($InputObject)
   @($InputObject) | Where-Object { $_ -ne $null -and $_ -ne '' }
+}
+
+function Expand-InputCollection {
+  <# Wandelt beliebige Eingabeobjekte (Strings, Arrays, Listen) in ein String-Array um. #>
+  param([object[]]$Items)
+
+  if ($null -eq $Items) { return @() }
+
+  $result = New-Object System.Collections.Generic.List[string]
+  foreach ($item in $Items) {
+    if ($null -eq $item) { continue }
+
+    if ($item -is [string]) {
+      $result.Add($item) | Out-Null
+      continue
+    }
+
+    if ($item -is [System.Collections.IEnumerable] -and -not ($item -is [string])) {
+      foreach ($subItem in $item) {
+        if ($null -eq $subItem) { continue }
+        $result.Add([string]$subItem) | Out-Null
+      }
+      continue
+    }
+
+    $result.Add([string]$item) | Out-Null
+  }
+
+  $result.ToArray()
 }
 
 # ============================================================================
@@ -454,7 +501,7 @@ function Resolve-DomainList {
         Write-Warning ('DomainSearch "{0}" lieferte keine Treffer.' -f $pClean)
         continue
       }
-      Write-Verbose ('DomainSearch "{0}" -> {1} Treffer' -f $pClean, $zones.Count)
+      Write-Info ('DomainSearch "{0}" -> {1} Treffer' -f $pClean, $zones.Count)
       foreach ($z in $zones) {
         $nameProp = if ($z.PSObject.Properties.Name -contains 'zone_name') { $z.zone_name } else { $null }
         if ([string]::IsNullOrWhiteSpace($nameProp)) { continue }
@@ -481,7 +528,7 @@ function Invoke-DomainAudit {
   $zone = Get-PrimaryZoneForFqdn -Fqdn $canonical
   if ($VerboseZoneInfo) {
     if ($zone) {
-      Write-Verbose ('Zone: {0} (#{1}) dnssec={2} status={3}' -f $zone.zone_name,$zone.id,$zone.dnssec,$zone.status)
+      Write-Info ('Zone: {0} (#{1}) dnssec={2} status={3}' -f $zone.zone_name,$zone.id,$zone.dnssec,$zone.status)
     } else {
       Write-Warning 'Keine passende Zone gefunden.'
     }
@@ -558,11 +605,13 @@ function Invoke-DomainAudit {
   }
 }
 
-$domainInputs = Resolve-DomainList -Manual $Domains -SearchPatterns $DomainSearch
+$manualDomainInputs = Expand-InputCollection -Items $Domains
+$searchPatternInputs = Expand-InputCollection -Items $DomainSearch
+$domainInputs = Resolve-DomainList -Manual $manualDomainInputs -SearchPatterns $searchPatternInputs
 if ($domainInputs.Count -eq 0) {
   throw 'Keine Domains gefunden. Uebergib -Domains oder -DomainSearch.'
 }
-Write-Verbose ('Starte Checks fuer {0} Domains.' -f $domainInputs.Count)
+Write-Info ('Starte Checks fuer {0} Domains.' -f $domainInputs.Count)
 
 $domainReports = foreach ($domain in $domainInputs) {
   Invoke-DomainAudit -Domain $domain -AltRootValue $AltRoot -StrictMode:$Strict -VerboseZoneInfo:$VerboseZones
@@ -614,7 +663,7 @@ if ($OutputJson -and $OutputJson.Trim()) {
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
   }
   Set-Content -Path $OutputJson -Value $reportJson -Encoding UTF8
-  Write-Verbose ('Report gespeichert unter {0}' -f $OutputJson)
+  Write-Info ('Report gespeichert unter {0}' -f $OutputJson)
 }
 
 # ============================================================================
