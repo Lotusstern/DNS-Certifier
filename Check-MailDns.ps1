@@ -330,9 +330,6 @@ function Get-Zones {
   }
 
   $finalList = $candidates | Where-Object { $_ } | Select-Object -Unique
-  if (-not ($finalList | Where-Object { $_ -eq '*' })) {
-    $finalList += '*'
-  }
 
   $results = @()
   foreach ($pattern in $finalList) {
@@ -346,6 +343,10 @@ function Get-Zones {
   }
 
   if (-not $results) {
+    if (-not ($finalList | Where-Object { $_ -eq '*' })) {
+      try { $results += @( Invoke-ApiBody -Path 'list_zones' -Form @{ search='*' } ) } catch {}
+      try { $results += @( Invoke-ApiQS   -Path 'list_zones' -Form @{ search='*' } ) } catch {}
+    }
     try { $results += @( Invoke-ApiBody -Path 'list_zones' -Form $null ) } catch {}
     try { $results += @( Invoke-ApiQS   -Path 'list_zones' -Form $null ) } catch {}
   }
