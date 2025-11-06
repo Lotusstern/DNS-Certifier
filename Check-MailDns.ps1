@@ -233,22 +233,38 @@ function ConvertTo-CleanArray {
 # SECTION 6 - Zonen- und Recordabfragen
 #   Hier sitzt die komplette Logik, um list_zones und list_records robust gegen
 #   API-Eigenheiten zu machen. Auszubildende koennen sehen, welche Fallbacks
-#   greifen, wenn ein Request-Typ nicht funktioniert.
+#   greifen, wenn ein Request-Typ nicht funktioniert. Neu ist hier ausserdem,
+#   dass wir mehrere Suchmuster (genau, *prefix, prefix*, *prefix*) durchprobieren,
+#   weil einzelne Mandanteninstanzen nur bestimmte Varianten akzeptieren.
 # ============================================================================
 function Get-Zones {
   param([string]$Search='*')
-  $Search = Format-SearchPattern $Search
 
-  try { $res = @( Invoke-ApiBody -Path 'list_zones' -Form @{ search=$Search } ) } catch { $res=@() }
-  if ($res.Count -gt 0) { return $res }
+  $candidates = New-Object System.Collections.Generic.List[string]
+  if ([string]::IsNullOrWhiteSpace($Search)) {
+    $candidates.Add('*') | Out-Null
+  } else {
+    $clean = $Search.Trim()
+    $candidates.Add($clean) | Out-Null
+    if (-not $clean.Contains('*')) {
+      $candidates.Add("*$clean*") | Out-Null
+      $candidates.Add("$clean*")  | Out-Null
+      $candidates.Add("*$clean")  | Out-Null
+    }
+  }
 
-  try { $res = @( Invoke-ApiQS   -Path 'list_zones' -Form @{ search=$Search } ) } catch { $res=@() }
-  if ($res.Count -gt 0) { return $res }
+  $finalList = $candidates | Where-Object { $_ } | Select-Object -Unique
+  if (-not ($finalList | Where-Object { $_ -eq '*' })) {
+    $finalList += '*'
+  }
 
-  if ($Search -ne '*') {
-    try { $res = @( Invoke-ApiBody -Path 'list_zones' -Form @{ search='*' } ) } catch { $res=@() }
+  foreach ($pattern in $finalList) {
+    $form = if ($pattern -eq '*') { @{ search='*' } } else { @{ search=$pattern } }
+
+    try { $res = @( Invoke-ApiBody -Path 'list_zones' -Form $form ) } catch { $res=@() }
     if ($res.Count -gt 0) { return $res }
-    try { $res = @( Invoke-ApiQS   -Path 'list_zones' -Form @{ search='*' } ) } catch { $res=@() }
+
+    try { $res = @( Invoke-ApiQS   -Path 'list_zones' -Form $form ) } catch { $res=@() }
     if ($res.Count -gt 0) { return $res }
   }
 
@@ -533,11 +549,11 @@ function Invoke-DomainAudit {
     domain = $canonical
     status = $status
     checks = [pscustomobject]@{
-      mx     = @{ present = (@($mx).Count -gt 0);                     found = ,(ConvertTo-CleanArray ($mx | ForEach-Object { $_.raw })) }
-      spf    = @{ present = $spf.present;  warnNoAll = $spf.warnNoAll; found = ,(ConvertTo-CleanArray $spf.found) }
-      dmarc  = @{ present = $dmarc.present; policyWarn = $dmarc.policyWarn; found = ,(ConvertTo-CleanArray $dmarc.found) }
-      dkim   = @{ present = $dkim.present;                              found = ,(ConvertTo-CleanArray $dkim.found) }
-      srv443 = @{ present = $srv.present;   wrongPort = $srv.wrongPort;  found = ,(ConvertTo-CleanArray $srv.found) }
+      mx     = @{ present = (@($mx).Count -gt 0);                     found =  (ConvertTo-CleanArray ($mx | ForEach-Object { $_.raw })) }
+      spf    = @{ present = $spf.present;  warnNoAll = $spf.warnNoAll; found =  (ConvertTo-CleanArray $spf.found) }
+      dmarc  = @{ present = $dmarc.present; policyWarn = $dmarc.policyWarn; found =  (ConvertTo-CleanArray $dmarc.found) }
+      dkim   = @{ present = $dkim.present;                              found =  (ConvertTo-CleanArray $dkim.found) }
+      srv443 = @{ present = $srv.present;   wrongPort = $srv.wrongPort;  found =  (ConvertTo-CleanArray $srv.found) }
     }
   }
 }
