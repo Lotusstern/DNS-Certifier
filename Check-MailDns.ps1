@@ -1,122 +1,80 @@
 <#
 .SYNOPSIS
-  Prueft automatisiert die fuer den E-Mail-Betrieb wichtigen DNS-Eintraege
-  (MX, SPF, DMARC, DKIM, Autodiscover-SRV) ueber eure interne DNS-REST-API.
+  Kompakte Mail-DNS-Pruefung fuer MX, SPF, DMARC, DKIM und Autodiscover.
 
 .DESCRIPTION
-  Dieses Skript fuehrt eine wiederholbare Mail-DNS-Pruefung fuer beliebig viele
-  Domains aus. Es ist als Werkzeug fuer Administratorinnen und Auszubildende
-  gedacht und deshalb in klar abgegrenzte Abschnitte mit ausfuehrlichen
-  Kommentaren gegliedert. Jeder Abschnitt spiegelt exakt einen Arbeitsschritt
-  wider:
+  Fuehrt reproduzierbare Checks fuer beliebig viele Domains gegen die DNS-REST-API aus:
+    1. Konfiguration pruefen und API testen
+    2. Domains sammeln (Parameter + list_zones-Suche)
+    3. Benoetigte Records abrufen
+    4. Ergebnisse als JSON und optional Tabelle ausgeben
 
-  1. Grundkonfiguration validieren und API-Verbindung testen
-  2. Domains zusammentragen (manuell + automatische list_zones-Suche)
-  3. Fuer jede Domain die benoetigten Records abrufen
-  4. Ergebnisse bewerten (OK/WARN/FAIL) und als JSON sowie optional als Tabelle
-     ausgeben
-
-  Die einzelnen Checks entsprechen den Mindestanforderungen fuer
-  produktionsrelevante Mail-Zonen:
-      MX  (@-Domain)                       -> Mail-Routing
-      SPF (TXT @-Domain)                   -> Versandautorisierung
-      DMARC (TXT _dmarc.<domain>)          -> Richtlinie none/quarantine/reject
-      DKIM (TXT/CNAME *_domainkey.*)       -> Signaturschluessel oder Delegation
-      SRV  _autodiscover._tcp.<domain>:443 -> Outlook Autodiscover via Port 443
+  Die Checks decken die Kernanforderungen produktiver Mail-Zonen ab.
+    MX     -> Mail-Routing
+    SPF    -> Versandautorisierung
+    DMARC  -> Richtlinie none/quarantine/reject
+    DKIM   -> Signaturschluessel oder Delegation
+    SRV443 -> Outlook-Autodiscover
 
 .CHANGELOG
-  Stand dieses Skripts nach den letzten Anpassungen:
-    - Zonenerkennung: Wir suchen nach passenden list_zones-Eintraegen ueber
-      mehrere Wildcard-Varianten, puffern die Ergebnisse und weisen jeder Domain
-      ihre beste Zone zu. Dadurch entfallen viele manuellen zone_id-Angaben und
-      Fallback-Warnungen werden seltener.
-    - Record-Suche: Die Abfragen fuer MX, SPF, DMARC, DKIM und SRV verwenden
-      gemeinsame Hilfsfunktionen, die Ergebnisse zusammenfassen, Duplikate
-      entfernen und bei Bedarf alternative Pfade (Query-String statt Body)
-      ausprobieren.
-    - DKIM-Delegation: Neben der eigentlichen Domain-Zone wird automatisch eine
-      zusaetzliche Root-Zone (Standard: rwth-aachen.de) abgefragt, damit zentral
-      verwaltete Selector-Schluessel sichtbar sind.
-    - Diagnoseoptionen: Mit -VerboseOutput (Alias -Verbose), -VerboseZones und
-      -DebugHttp lassen sich Lernsessions oder Stoerungsanalysen detailliert
-      nachverfolgen, ohne dass Standardnutzerinnen von Meldungen erschlagen
-      werden.
+  - Zonen- und Recordsuche nutzt wiederverwendbare Helfer inkl. Body/QS-Fallback.
+  - DKIM-Delegationen werden optional ueber eine Alternativ-Root abgefragt.
+  - Diagnoseoptionen: -VerboseOutput/-Verbose, -VerboseZones, -DebugHttp.
 
 .PARAMETER ApiBase
-  Basis-URL der DNS-API (ohne Slash am Ende), z. B.:
-  https://noc-portal.itc.rwth-aachen.de/dns-admin/api/v1
+  Basis-URL der DNS-API ohne Slash am Ende.
 
 .PARAMETER ApiToken
-  API-Token (alternativ: Umgebungsvariable DNS_API_TOKEN). Der Wert entspricht
-  dem Base64-kodierten Basic-Auth-String.
+  Basic-Auth-Token (alternativ: Umgebungsvariable DNS_API_TOKEN).
 
 .PARAMETER Domains
-  Eine oder mehrere FQDNs, die explizit geprueft werden sollen. Der Parameter
-  akzeptiert Strings, Arrays und Listen (z. B. Get-Content oder Import-Csv) und
-  entfernt dabei Leerzeilen sowie doppelte Eintraege automatisch.
+  Manuelle FQDN-Liste (Strings, Arrays, Dateien).
 
 .PARAMETER DomainSearch
-  Eine oder mehrere Suchmuster (Wildcards erlaubt). Die Treffer der
-  list_zones-Abfrage werden zur manuellen Liste hinzugefuegt; auch hier duerfen
-  Arrays oder andere Auflistungen uebergeben werden.
+  Suchmuster fuer list_zones (Wildcards erlaubt).
 
 .PARAMETER OutputJson
-  Optionaler Dateipfad, unter dem der JSON-Report gespeichert wird.
+  Dateipfad fuer den JSON-Report.
 
 .PARAMETER AltRoot
-  Alternative Root fuer DKIM-Delegation (Standard: rwth-aachen.de). Einige
-  DKIM-Selector sind zentral unter *_domainkey.rwth-aachen.de abgelegt.
+  Alternative Root fuer DKIM-Delegation (Standard: rwth-aachen.de).
 
 .PARAMETER IncludeDrafts
-  Aktiviert Records im Status "draft" (Standard: nur deployed).
+  Bezieht Records mit Status "draft" ein.
 
 .PARAMETER VerboseZones
-  Gibt zusammen mit -VerboseOutput zusaetzliche Zoneninformationen (ID, DNSSEC,
-  Status) aus.
+  Zeigt bei -VerboseOutput Zusatzinfos zur Zone.
 
 .PARAMETER DebugHttp
-  Zeigt jede HTTP-Anfrage farblich hervorgehoben an (sowohl Body- als auch
-  Query-String-Variante). Wenn nur -VerboseOutput verwendet wird, erscheinen
-  die Meldungen in dezenter Form.
+  Hebt jede HTTP-Anfrage hervor.
 
 .PARAMETER VerboseOutput
-  Aktiviert detaillierte Fortschritts- und Zonenmeldungen fuer Lern- und
-  Fehleranalysezwecke. Ohne diesen Schalter bleiben die Ausgaben bewusst kurz.
-  Alias: -Verbose
+  Ausfuehrliche Fortschrittsmeldungen (Alias: -Verbose).
 
 .PARAMETER Strict
-  Hebt einzelne Warnungen auf FAIL an:
-   - SPF ohne "-all" wird zum Fehler
-   - DMARC mit "p=none" wird zum Fehler
+  Wandelt SPF ohne "-all" sowie DMARC "p=none" in Fehler.
 
 .PARAMETER Summary
-  Erstellt vor der JSON-Ausgabe eine gut lesbare Tabelle (Format-Table).
+  Gibt vor dem JSON eine tabellarische Uebersicht aus.
 
 .EXAMPLE
   $env:DNS_API_TOKEN = "..."
-  .\Check-MailDns.ps1 `
-    -ApiBase "https://.../api/v1" `
-    -Domains "itc.rwth-aachen.de","rwth-aachen.de" `
-    -Summary -OutputJson .\reports\maildns.json
+  .\Check-MailDns.ps1 -ApiBase "https://.../api/v1" -Domains "rwth-aachen.de" -Summary -OutputJson .\reports\maildns.json
 
 .EXAMPLE
-  # Domains aus einer Textdatei (eine Zeile pro Domain) einlesen:
   $domains = Get-Content .\maildomains.txt
   .\Check-MailDns.ps1 -ApiBase "https://.../api/v1" -Domains $domains -Summary
 
 .EXAMPLE
-  # Kombination aus manueller Liste und dynamischer Suchanfrage:
-  $domains = Get-Content .\domains.txt
   .\Check-MailDns.ps1 -ApiBase "https://.../api/v1" -Domains $domains -DomainSearch "*.rwth-aachen.de" -Summary
 
 .NOTES
-  - Funktioniert mit Windows PowerShell 5.1 und PowerShell 7+.
-  - Scriptdatei als UTF-8 speichern. Konsolenstrings sind bewusst ASCII, damit
-    Umlaute keine Darstellungsfehler verursachen.
-  - Exitcodes: 0 (alles ok) | 1 (nur Warnungen) | 2 (mind. ein Fehler)
-  - Mehrzeilige Aufrufe benoetigen einen Backtick (`) am Zeilenende, damit
-    PowerShell die Parameterliste korrekt fortsetzt.
+  - Laeuft auf Windows PowerShell 5.1 und PowerShell 7+.
+  - Scriptdatei als UTF-8 speichern (Konsole bleibt ASCII-freundlich).
+  - Exitcodes: 0=OK | 1=Warnungen | 2=Fehler.
+  - Mehrzeilige Aufrufe benoetigen einen Backtick (`) am Zeilenende.
 #>
+
 
 param(
   [string]$ApiBase,
@@ -186,45 +144,70 @@ function Write-Info {
 #   und greifen bei Bedarf auf Query-String zurueck. Die Funktionen werden in
 #   allen spaeteren Abfragen wiederverwendet.
 # ============================================================================
-function Invoke-ApiBody {
-  param([Parameter(Mandatory=$true)][string]$Path, [hashtable]$Form)
+function Invoke-ApiGet {
+  param(
+    [Parameter(Mandatory=$true)][string]$Path,
+    [hashtable]$Form,
+    [ValidateSet('Body','QueryString')][string]$Mode = 'Body'
+  )
+
   $uri = "$ApiBase/$Path"
-  Write-DebugHttp "[HTTP] GET $uri  (Body)"
-  Invoke-RestMethod -Method GET -Uri $uri -Headers $Headers -Body $Form -ErrorAction Stop
-}
-function Invoke-ApiQS {
-  param([Parameter(Mandatory=$true)][string]$Path, [hashtable]$Form)
-  $uri = "$ApiBase/$Path"
-  $qs  = ''
-  if ($Form) {
-    $pairs = New-Object System.Collections.Generic.List[string]
-    foreach ($kv in $Form.GetEnumerator()) {
-      $val    = [string]$kv.Value
-      # Die API erwartet Wildcards als Sternchen, daher wird * nicht encodiert.
-      $valEnc = [System.Uri]::EscapeDataString($val).Replace('%2A','*')
-      $pairs.Add('{0}={1}' -f $kv.Key,$valEnc)
+  switch ($Mode) {
+    'Body' {
+      Write-DebugHttp "[HTTP] GET $uri  (Body)"
+      return Invoke-RestMethod -Method GET -Uri $uri -Headers $Headers -Body $Form -ErrorAction Stop
     }
-    $qs = ($pairs -join '&')
+    'QueryString' {
+      $qs = ''
+      if ($Form) {
+        $pairs = foreach ($kv in $Form.GetEnumerator()) {
+          $val = [string]$kv.Value
+          $valEnc = [System.Uri]::EscapeDataString($val).Replace('%2A','*')
+          '{0}={1}' -f $kv.Key,$valEnc
+        }
+        $qs = ($pairs -join '&')
+      }
+      $uriQS = if ($qs) { "$uri`?$qs" } else { $uri }
+      Write-DebugHttp "[HTTP] GET $uriQS  (QS)"
+      return Invoke-RestMethod -Method GET -Uri $uriQS -Headers $Headers -ErrorAction Stop
+    }
   }
-  $uriQS = if ($qs) { "$uri`?$qs" } else { $uri }
-  Write-DebugHttp "[HTTP] GET $uriQS  (QS)"
-  Invoke-RestMethod -Method GET -Uri $uriQS -Headers $Headers -ErrorAction Stop
 }
 
-# ============================================================================
-# SECTION 4 - API-Grundtest (Token gueltig? Zonen abrufbar?)
-#   Bevor wir echte Arbeit investieren, prueft dieser Block, ob Token und
-#   Basis-URL funktionieren. Die Rueckmeldungen erscheinen mit -VerboseOutput.
-# ============================================================================
+function Invoke-ApiGetBoth {
+  param([Parameter(Mandatory=$true)][string]$Path, [hashtable]$Form)
+
+  $results = @()
+  $errors  = @()
+  foreach ($mode in @('Body','QueryString')) {
+    try {
+      $results += @(Invoke-ApiGet -Path $Path -Form $Form -Mode $mode)
+    } catch {
+      $errors += $_
+    }
+  }
+
+  if ($results.Count -eq 0 -and $errors.Count -gt 0) {
+    throw $errors[-1]
+  }
+
+  $results
+}
+
+function Invoke-ApiGetAll {
+  param([Parameter(Mandatory=$true)][string]$Path, [hashtable]$Form)
+  try { @(Invoke-ApiGetBoth -Path $Path -Form $Form) } catch { @() }
+}
+
 function Test-ApiConnectivity {
   try {
-    $info = Invoke-ApiBody -Path 'get_api_token_info' -Form $null
+    $info = Invoke-ApiGet -Path 'get_api_token_info' -Form $null
     Write-Info ('[API] Token OK: {0}' -f $info.name)
   } catch {
     throw ('API-Check fehlgeschlagen. Pruefe -ApiBase ({0}) und Token. Fehler: {1}' -f $ApiBase, $_.Exception.Message)
   }
   try {
-    [void](Invoke-ApiBody -Path 'list_zones' -Form @{ search='*' })
+    [void](Invoke-ApiGet -Path 'list_zones' -Form @{ search='*' })
   } catch {
     Write-Warning ('Zonenliste nicht abrufbar: {0}' -f $_.Exception.Message)
   }
@@ -275,7 +258,7 @@ function Expand-InputCollection {
 
   if ($null -eq $Items) { return @() }
 
-  $result = New-Object System.Collections.Generic.List[string]
+  $result = [System.Collections.Generic.List[string]]::new()
   foreach ($item in $Items) {
     if ($null -eq $item) { continue }
 
@@ -316,7 +299,7 @@ function Get-Zones {
     return $script:ZoneCache[$cacheKey]
   }
 
-  $candidates = New-Object System.Collections.Generic.List[string]
+  $candidates = [System.Collections.Generic.List[string]]::new()
   if ([string]::IsNullOrWhiteSpace($Search)) {
     $candidates.Add('*') | Out-Null
   } else {
@@ -334,21 +317,14 @@ function Get-Zones {
   $results = @()
   foreach ($pattern in $finalList) {
     $form = if ($pattern -eq '*') { @{ search='*' } } else { @{ search=$pattern } }
-
-    try { $res = @( Invoke-ApiBody -Path 'list_zones' -Form $form ) } catch { $res=@() }
-    if ($res.Count -gt 0) { $results += $res }
-
-    try { $res = @( Invoke-ApiQS   -Path 'list_zones' -Form $form ) } catch { $res=@() }
-    if ($res.Count -gt 0) { $results += $res }
+    $results += Invoke-ApiGetAll -Path 'list_zones' -Form $form
   }
 
   if (-not $results) {
     if (-not ($finalList | Where-Object { $_ -eq '*' })) {
-      try { $results += @( Invoke-ApiBody -Path 'list_zones' -Form @{ search='*' } ) } catch {}
-      try { $results += @( Invoke-ApiQS   -Path 'list_zones' -Form @{ search='*' } ) } catch {}
+      $results += Invoke-ApiGetAll -Path 'list_zones' -Form @{ search='*' }
     }
-    try { $results += @( Invoke-ApiBody -Path 'list_zones' -Form $null ) } catch {}
-    try { $results += @( Invoke-ApiQS   -Path 'list_zones' -Form $null ) } catch {}
+    $results += Invoke-ApiGetAll -Path 'list_zones' -Form $null
   }
 
   $unique = @()
@@ -370,7 +346,7 @@ function Get-PrimaryZoneForFqdn {
   $fq = $Fqdn.TrimEnd('.').ToLower()
 
   $parts = $fq.Split('.')
-  $searchOrder = New-Object System.Collections.Generic.List[string]
+  $searchOrder = [System.Collections.Generic.List[string]]::new()
   for ($i = 0; $i -lt $parts.Length; $i++) {
     $suffix = ($parts[$i..($parts.Length-1)] -join '.')
     if (-not [string]::IsNullOrWhiteSpace($suffix)) {
@@ -412,9 +388,7 @@ function Find-Records {
     $form = @{ search = (Format-SearchPattern $term) }
     if ($ZoneId) { $form.zone_id = [int]$ZoneId }
 
-    try { $resBody = @( Invoke-ApiBody -Path 'list_records' -Form $form ) } catch { $resBody=@() }
-    try { $resQS   = @( Invoke-ApiQS   -Path 'list_records' -Form $form ) } catch { $resQS=@() }
-    $collected += $resBody + $resQS
+    $collected += Invoke-ApiGetAll -Path 'list_records' -Form $form
   }
 
   if (-not $collected) { return @() }
@@ -451,7 +425,7 @@ function Get-RecordSearchTerms {
     $Zone
   )
 
-  $terms = New-Object System.Collections.Generic.List[string]
+  $terms = [System.Collections.Generic.List[string]]::new()
   $canonical = $Domain.Trim().TrimEnd('.')
   if ($canonical) { $terms.Add($canonical) | Out-Null }
 
@@ -538,7 +512,7 @@ function Test-DMARC {
 function Test-DKIM {
   param([string]$Domain,[Nullable[int]]$DomainZoneId,[string]$AltRoot,[string[]]$SearchTerms)
 
-  $rawHits = New-Object System.Collections.Generic.List[string]
+  $rawHits = [System.Collections.Generic.List[string]]::new()
 
   $dkimSearch = @()
   $dkimSearch += ($SearchTerms | ForEach-Object { "_domainkey.$_" })
@@ -607,8 +581,8 @@ function Test-SRV443 {
 function Resolve-DomainList {
   param([string[]]$Manual,[string[]]$SearchPatterns)
 
-  $result = New-Object System.Collections.Generic.List[string]
-  $seen   = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
+  $result = [System.Collections.Generic.List[string]]::new()
+  $seen   = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
   if ($Manual) {
     foreach ($m in $Manual) {
