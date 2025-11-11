@@ -247,9 +247,24 @@ function Remove-TrailingDot {
   $Fqdn.TrimEnd('.')
 }
 function ConvertTo-CleanArray {
-  <# Stellt sicher, dass JSON-Arrays keine $null oder Leerstrings enthalten. #>
+  <# Stellt sicher, dass JSON-Arrays keine $null oder Leerstrings oder Duplikate enthalten. #>
   param($InputObject)
-  @($InputObject) | Where-Object { $_ -ne $null -and $_ -ne '' }
+
+  $clean = @($InputObject) | Where-Object { $_ -ne $null -and $_ -ne '' }
+  if ($clean.Count -le 1) { return $clean }
+
+  $result = [System.Collections.Generic.List[object]]::new()
+  $seenStrings = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+
+  foreach ($item in $clean) {
+    if ($item -is [string]) {
+      if ($seenStrings.Add($item)) { $result.Add($item) | Out-Null }
+    } else {
+      $result.Add($item) | Out-Null
+    }
+  }
+
+  $result.ToArray()
 }
 
 function Expand-InputCollection {
