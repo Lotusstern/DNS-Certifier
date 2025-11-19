@@ -2,6 +2,7 @@ workflow:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
     - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "push"'
     - when: never
 
 stages: [test]
@@ -15,10 +16,8 @@ stages: [test]
     when: always
     paths: [reports\maildns.json]
 
-maildns:report:
-  extends: .maildns-base
-  script:
-    - |
+.maildns-script: &maildns_script
+  - |
       $domainFile = if ($env:MAIL_DOMAINS_FILE) { $env:MAIL_DOMAINS_FILE } else { 'maildomains.txt' }
       if (-not (Test-Path -LiteralPath $domainFile -PathType Leaf)) {
         throw "Domain list file '$domainFile' not found. Provide MAIL_DOMAINS_FILE or commit the file to the repo."
@@ -28,22 +27,21 @@ maildns:report:
         throw "Domain list file '$domainFile' does not contain any usable domains."
       }
       Write-Host ("Loaded {0} domains from {1}." -f $domains.Count, $domainFile)
-      .\Check-MailDns.ps1 -ApiBase $env:API_BASE -Domains $domains -Summary -OutputJson 'reports\maildns.json'
+      if (-not (Test-Path -LiteralPath 'reports' -PathType Container)) {
+        New-Item -ItemType Directory -Path 'reports' -Force | Out-Null
+      }
+
+maildns:report:
+  extends: .maildns-base
+  script:
+    - *maildns_script
+    - .\Check-MailDns.ps1 -ApiBase $env:API_BASE -Domains $domains -Summary -OutputJson 'reports\maildns.json'
   allow_failure:
     exit_codes: [1]     # <- WARN (1) ist erlaubt, FAIL (2) bleibt rot
 
 maildns:strict:
   extends: .maildns-base
   script:
-    - |
-      $domainFile = if ($env:MAIL_DOMAINS_FILE) { $env:MAIL_DOMAINS_FILE } else { 'maildomains.txt' }
-      if (-not (Test-Path -LiteralPath $domainFile -PathType Leaf)) {
-        throw "Domain list file '$domainFile' not found. Provide MAIL_DOMAINS_FILE or commit the file to the repo."
-      }
-      $domains = Get-Content -LiteralPath $domainFile | Where-Object { $_ -and -not $_.StartsWith('#') }
-      if (-not $domains) {
-        throw "Domain list file '$domainFile' does not contain any usable domains."
-      }
-      Write-Host ("Loaded {0} domains from {1}." -f $domains.Count, $domainFile)
-      .\Check-MailDns.ps1 -ApiBase $env:API_BASE -Domains $domains -Strict -Summary -OutputJson 'reports\maildns.json'
+    - *maildns_script
+    - .\Check-MailDns.ps1 -ApiBase $env:API_BASE -Domains $domains -Strict -Summary -OutputJson 'reports\maildns.json'
   when: manual
