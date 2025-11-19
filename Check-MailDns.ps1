@@ -140,18 +140,36 @@ function Import-EnvDomains {
 
 function Get-FallbackDomainFile {
   $locations = [System.Collections.Generic.List[string]]::new()
+
+  $scriptDir = $null
   if ($PSCommandPath) {
-    $locations.Add((Split-Path -Parent $PSCommandPath)) | Out-Null
+    $scriptDir = Split-Path -Parent $PSCommandPath
+  } elseif ($PSScriptRoot) {
+    $scriptDir = $PSScriptRoot
+  } elseif ($MyInvocation -and $MyInvocation.MyCommand -and $MyInvocation.MyCommand.Path) {
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
   }
-  $locations.Add((Get-Location).Path) | Out-Null
+
+  $current = (Get-Location).Path
+
+  foreach ($dir in @($scriptDir, $current) | Where-Object { $_ }) {
+    $locations.Add($dir) | Out-Null
+
+    $parent = $dir
+    for ($i = 0; $i -lt 5; $i++) {
+      $parent = Split-Path -Parent $parent
+      if (-not $parent) { break }
+      $locations.Add($parent) | Out-Null
+    }
+  }
 
   $names = @('maildomains.txt','smallmaildomains.txt')
-  $seen  = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+  $seenPaths  = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
   foreach ($dir in $locations | Where-Object { $_ }) {
     foreach ($name in $names) {
       $candidate = Join-Path $dir $name
-      if ($seen.Add($candidate) -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+      if ($seenPaths.Add($candidate) -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
         return $candidate
       }
     }
