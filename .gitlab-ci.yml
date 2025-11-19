@@ -1,29 +1,45 @@
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - when: never
+
 stages: [test]
 
-maildns:report:
+.maildns-base:
   stage: test
   tags: [windows]
   before_script:
     - $ProgressPreference = 'SilentlyContinue'
-  script:
-    - $domains = ($env:MAIL_DOMAINS -split '[,\s]+' | ? { $_ })
-    - .\Check-MailDns.ps1 -ApiBase $env:API_BASE -Domains $domains -Summary -OutputJson 'reports\maildns.json'
+    - |
+      if ($env:MAIL_DOMAINS) {
+        Write-Host 'Using MAIL_DOMAINS variable'
+        $domains = $env:MAIL_DOMAINS -split '[,\s]+'
+      }
+      elseif (Test-Path .\maildomains.txt) {
+        Write-Host 'Loading domains from maildomains.txt'
+        $domains = Get-Content .\maildomains.txt
+      }
+      else {
+        throw 'No domains supplied. Provide MAIL_DOMAINS or commit maildomains.txt.'
+      }
+      $domains = $domains | Where-Object { $_ -and -not $_.StartsWith('#') }
+      if (-not $domains) {
+        throw 'Domain list is empty after filtering comments/blank lines.'
+      }
   artifacts:
     when: always
     paths: [reports\maildns.json]
+
+maildns:report:
+  extends: .maildns-base
+  script:
+    - .\Check-MailDns.ps1 -ApiBase $env:API_BASE -Domains $domains -Summary -OutputJson 'reports\maildns.json'
   allow_failure:
     exit_codes: [1]     # <- WARN (1) ist erlaubt, FAIL (2) bleibt rot
 
-
 maildns:strict:
-  stage: test
-  tags: [windows]
-  before_script:
-    - $ProgressPreference = 'SilentlyContinue'
+  extends: .maildns-base
   script:
-    - $domains = ($env:MAIL_DOMAINS -split '[,\s]+' | Where-Object { $_ })
     - .\Check-MailDns.ps1 -ApiBase $env:API_BASE -Domains $domains -Strict -Summary -OutputJson 'reports\maildns.json'
-  artifacts:
-    when: always
-    paths: [reports\maildns.json]
   when: manual
