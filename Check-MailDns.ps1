@@ -72,6 +72,7 @@
   - Laeuft auf Windows PowerShell 5.1 und PowerShell 7+.
   - Scriptdatei als UTF-8 speichern (Konsole bleibt ASCII-freundlich).
   - Exitcodes: 0=OK | 1=Warnungen | 2=Fehler.
+  - Fehlt eine Domains-Liste, wird automatisch maildomains.txt (oder smallmaildomains.txt) eingelesen.
   - Mehrzeilige Aufrufe benoetigen einen Backtick (`) am Zeilenende.
 #>
 
@@ -115,6 +116,54 @@ $ApiBase = $ApiBase.TrimEnd('/')
 if ($null -eq $Domains) { $Domains = @() }
 if ($null -eq $DomainSearch) { $DomainSearch = @() }
 if (-not $script:AltRootZoneCache) { $script:AltRootZoneCache = @{} }
+
+# ============================================================================
+# SECTION 5A - Default-Domain-Fallback
+#   CI-Umgebungen liefern nicht immer eine Domains-Liste. Wir versuchen deshalb,
+#   automatisch eine lokale maildomains.txt (oder Alternativen) zu laden, bevor
+#   wir mit einem Fehler abbrechen.
+# ============================================================================
+function Get-FallbackDomainFile {
+  $locations = [System.Collections.Generic.List[string]]::new()
+  if ($PSCommandPath) {
+    $locations.Add((Split-Path -Parent $PSCommandPath)) | Out-Null
+  }
+  $locations.Add((Get-Location).Path) | Out-Null
+
+  $names = @('maildomains.txt','smallmaildomains.txt')
+  $seen  = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+  foreach ($dir in $locations | Where-Object { $_ }) {
+    foreach ($name in $names) {
+      $candidate = Join-Path $dir $name
+      if ($seen.Add($candidate) -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+        return $candidate
+      }
+    }
+  }
+
+  return $null
+}
+
+function Import-FallbackDomains {
+  $file = Get-FallbackDomainFile
+  if (-not $file) { return [pscustomobject]@{ Domains = @(); Source = $null } }
+
+  try {
+    $content = Get-Content -LiteralPath $file -ErrorAction Stop
+  } catch {
+    Write-Warning ('Fallback-Datei "{0}" konnte nicht gelesen werden: {1}' -f $file, $_.Exception.Message)
+    return [pscustomobject]@{ Domains = @(); Source = $file }
+  }
+
+  $domains = @(
+    $content |
+      ForEach-Object { $_.Trim() } |
+      Where-Object { $_ -and -not $_.StartsWith('#') }
+  )
+
+  [pscustomobject]@{ Domains = $domains; Source = $file }
+}
 
 # ============================================================================
 # SECTION 2 - Logging-Helfer
@@ -695,12 +744,20 @@ function Invoke-DomainAudit {
   }
 }
 
-$manualDomainInputs = Expand-InputCollection -Items $Domains
-$searchPatternInputs = Expand-InputCollection -Items $DomainSearch
-$domainInputs = Resolve-DomainList -Manual $manualDomainInputs -SearchPatterns $searchPatternInputs
-if ($domainInputs.Count -eq 0) {
-  throw 'Keine Domains gefunden. Uebergib -Domains oder -DomainSearch.'
-}
+  $manualDomainInputs = Expand-InputCollection -Items $Domains
+  $searchPatternInputs = Expand-InputCollection -Items $DomainSearch
+  $domainInputs = Resolve-DomainList -Manual $manualDomainInputs -SearchPatterns $searchPatternInputs
+  if ($domainInputs.Count -eq 0) {
+    $fallback = Import-FallbackDomains
+    if ($fallback.Domains.Count -gt 0) {
+      Write-Warning ('Keine Domains ueber Parameter gefunden. Verwende "{0}" ({1} Eintraege).' -f $fallback.Source, $fallback.Domains.Count)
+      $domainInputs = Resolve-DomainList -Manual $fallback.Domains -SearchPatterns @()
+    }
+  }
+  if ($domainInputs.Count -eq 0) {
+    throw 'Keine Domains gefunden. Uebergib -Domains oder -DomainSearch.'
+  }
+
 Write-Info ('Starte Checks fuer {0} Domains.' -f $domainInputs.Count)
 
 $domainReports = foreach ($domain in $domainInputs) {
