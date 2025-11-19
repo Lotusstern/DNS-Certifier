@@ -123,6 +123,21 @@ if (-not $script:AltRootZoneCache) { $script:AltRootZoneCache = @{} }
 #   automatisch eine lokale maildomains.txt (oder Alternativen) zu laden, bevor
 #   wir mit einem Fehler abbrechen.
 # ============================================================================
+function Import-EnvDomains {
+  $raw = $env:MAIL_DOMAINS
+  if ([string]::IsNullOrWhiteSpace($raw)) {
+    return [pscustomobject]@{ Domains = @(); Source = $null }
+  }
+
+  $domains = @(
+    ($raw -split '[,\s]+') |
+      ForEach-Object { $_.Trim() } |
+      Where-Object { $_ -and -not $_.StartsWith('#') }
+  )
+
+  [pscustomobject]@{ Domains = $domains; Source = 'MAIL_DOMAINS' }
+}
+
 function Get-FallbackDomainFile {
   $locations = [System.Collections.Generic.List[string]]::new()
   if ($PSCommandPath) {
@@ -747,6 +762,13 @@ function Invoke-DomainAudit {
   $manualDomainInputs = Expand-InputCollection -Items $Domains
   $searchPatternInputs = Expand-InputCollection -Items $DomainSearch
   $domainInputs = Resolve-DomainList -Manual $manualDomainInputs -SearchPatterns $searchPatternInputs
+  if ($domainInputs.Count -eq 0) {
+    $envList = Import-EnvDomains
+    if ($envList.Domains.Count -gt 0) {
+      Write-Warning ('Keine Domains ueber Parameter gefunden. Verwende {0} ({1} Eintraege).' -f $envList.Source, $envList.Domains.Count)
+      $domainInputs = Resolve-DomainList -Manual $envList.Domains -SearchPatterns @()
+    }
+  }
   if ($domainInputs.Count -eq 0) {
     $fallback = Import-FallbackDomains
     if ($fallback.Domains.Count -gt 0) {
