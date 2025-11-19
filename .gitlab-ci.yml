@@ -12,20 +12,8 @@ stages: [test]
   before_script:
     - $ProgressPreference = 'SilentlyContinue'
     - |
-      if ($env:MAIL_DOMAINS) {
-        Write-Host 'Using MAIL_DOMAINS variable'
-        $domains = $env:MAIL_DOMAINS -split '[,\s]+'
-      }
-      elseif (Test-Path .\maildomains.txt) {
-        Write-Host 'Loading domains from maildomains.txt'
-        $domains = Get-Content .\maildomains.txt
-      }
-      else {
-        throw 'No domains supplied. Provide MAIL_DOMAINS or commit maildomains.txt.'
-      }
-      $domains = $domains | Where-Object { $_ -and -not $_.StartsWith('#') }
-      if (-not $domains) {
-        throw 'Domain list is empty after filtering comments/blank lines.'
+      if (-not $env:MAIL_DOMAINS) {
+        Write-Host 'MAIL_DOMAINS not set - Check-MailDns.ps1 will load the default list.'
       }
   artifacts:
     when: always
@@ -34,12 +22,12 @@ stages: [test]
 maildns:report:
   extends: .maildns-base
   script:
-    - .\Check-MailDns.ps1 -ApiBase $env:API_BASE -Domains $domains -Summary -OutputJson 'reports\maildns.json'
+    - .\Check-MailDns.ps1 -ApiBase $env:API_BASE -Summary -OutputJson 'reports\maildns.json'
   allow_failure:
     exit_codes: [1]     # <- WARN (1) ist erlaubt, FAIL (2) bleibt rot
 
 maildns:strict:
   extends: .maildns-base
   script:
-    - .\Check-MailDns.ps1 -ApiBase $env:API_BASE -Domains $domains -Strict -Summary -OutputJson 'reports\maildns.json'
+    - .\Check-MailDns.ps1 -ApiBase $env:API_BASE -Strict -Summary -OutputJson 'reports\maildns.json'
   when: manual
