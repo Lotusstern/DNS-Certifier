@@ -116,6 +116,7 @@ $ApiBase = $ApiBase.TrimEnd('/')
 if ($null -eq $Domains) { $Domains = @() }
 if ($null -eq $DomainSearch) { $DomainSearch = @() }
 if (-not $script:AltRootZoneCache) { $script:AltRootZoneCache = @{} }
+if (-not $script:RecordCache)    { $script:RecordCache    = @{} }
 
 # ============================================================================
 # SECTION 5A - Default-Domain-Fallback
@@ -465,6 +466,15 @@ function Find-Records {
   $searchTerms = $searchTerms | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
   if ($searchTerms.Count -eq 0) { return @() }
 
+    $zonePart  = $(if ($ZoneId) { "zone:$ZoneId" } else { 'zone:null' })
+    $draftPart = $(if ($IncludeDrafts) { 'drafts:include' } else { 'drafts:exclude' })
+    $termsPart = 'terms:' + (($searchTerms | Sort-Object) -join '|')
+    $cacheKey  = '{0}||{1}||{2}' -f $zonePart, $draftPart, $termsPart
+
+  if ($script:RecordCache.ContainsKey($cacheKey)) {
+    return $script:RecordCache[$cacheKey]
+  }
+
   $collected = @()
   foreach ($term in $searchTerms) {
     $form = @{ search = (Format-SearchPattern $term) }
@@ -498,6 +508,7 @@ function Find-Records {
     }
   }
 
+  $script:RecordCache[$cacheKey] = $deduped
   $deduped
 }
 
