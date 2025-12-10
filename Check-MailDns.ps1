@@ -470,6 +470,11 @@ function Find-Records {
     $draftPart = $(if ($IncludeDrafts) { 'drafts:include' } else { 'drafts:exclude' })
     $termsPart = 'terms:' + (($searchTerms | Sort-Object) -join '|')
     $cacheKey  = '{0}||{1}||{2}' -f $zonePart, $draftPart, $termsPart
+  $cacheKey = '{0}||{1}||{2}' -f (
+    if ($ZoneId) { "zone:$ZoneId" } else { 'zone:null' },
+    if ($IncludeDrafts) { 'drafts:include' } else { 'drafts:exclude' },
+    ('terms:' + (($searchTerms | Sort-Object) -join '|'))
+  )
 
   if ($script:RecordCache.ContainsKey($cacheKey)) {
     return $script:RecordCache[$cacheKey]
