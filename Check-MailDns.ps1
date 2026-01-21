@@ -1,79 +1,49 @@
 <#
-.SYNOPSIS
-  Kompakte Mail-DNS-Pruefung fuer MX, SPF, DMARC, DKIM und Autodiscover.
+EINFACHE ZEILE-FUER-ZEILE-ERKLAERUNG (BEGINNER)
 
-.DESCRIPTION
-  Fuehrt reproduzierbare Checks fuer beliebig viele Domains gegen die DNS-REST-API aus:
-    1. Konfiguration pruefen und API testen
-    2. Domains sammeln (Parameter + list_zones-Suche)
-    3. Benoetigte Records abrufen
-    4. Ergebnisse als JSON und optional Tabelle ausgeben
+Hinweis: Diese Kommentare erklaeren die nachfolgenden Codezeilen Schritt fuer Schritt.
+Der Code selbst bleibt unveraendert; nur die Erklaerungen wurden angepasst.
 
-  Die Checks decken die Kernanforderungen produktiver Mail-Zonen ab.
-    MX     -> Mail-Routing
-    SPF    -> Versandautorisierung
-    DMARC  -> Richtlinie none/quarantine/reject
-    DKIM   -> Signaturschluessel oder Delegation
-    SRV443 -> Outlook-Autodiscover
+01-03  Was macht das Skript?
+       Es prueft Mail-DNS-Eintraege (MX, SPF, DMARC, DKIM, Autodiscover) fuer Domains.
 
-.CHANGELOG
-  - Zonen- und Recordsuche nutzt wiederverwendbare Helfer inkl. Body/QS-Fallback.
-  - DKIM-Delegationen werden optional ueber eine Alternativ-Root abgefragt.
-  - Diagnoseoptionen: -VerboseOutput/-Verbose, -VerboseZones, -DebugHttp.
+04-10  Grober Ablauf:
+       (1) Parameter und API pruefen
+       (2) Domainliste sammeln (manuell oder per Suche)
+       (3) DNS-Records abrufen
+       (4) Ergebnisse ausgeben (JSON, optional Tabelle)
 
-.PARAMETER ApiBase
-  Basis-URL der DNS-API ohne Slash am Ende.
+11-18  Wofuer stehen die Checks?
+       MX     = Mail-Routing
+       SPF    = Wer darf Mails senden?
+       DMARC  = Policy (none/quarantine/reject)
+       DKIM   = Signaturschluessel oder Delegation
+       SRV443 = Outlook-Autodiscover auf Port 443
 
-.PARAMETER ApiToken
-  Basic-Auth-Token (alternativ: Umgebungsvariable DNS_API_TOKEN).
+19-23  Diese Datei enthaelt viele Hilfsfunktionen, damit die API-Abfragen stabil sind
+       (Fallbacks, Caches, Debug-Ausgaben).
 
-.PARAMETER Domains
-  Manuelle FQDN-Liste (Strings, Arrays, Dateien).
+24-58  Parameter (Eingaben) kurz erklaert:
+       ApiBase      = Basis-URL der DNS-API (ohne Slash am Ende)
+       ApiToken     = Basic-Auth-Token (oder Umgebungsvariable DNS_API_TOKEN)
+       Domains      = Liste der zu pruefenden Domains
+       DomainSearch = Suchmuster fuer list_zones (Wildcards moeglich)
+       OutputJson   = Pfad, wohin der JSON-Report geschrieben wird
+       AltRoot      = Alternative Root fuer DKIM-Delegation
+       IncludeDrafts= auch Records mit Status "draft" einbeziehen
+       VerboseZones = Zusatzinfos zur Zone anzeigen
+       DebugHttp    = jede HTTP-Anfrage sichtbar machen
+       VerboseOutput= ausfuehrliche Fortschrittsmeldungen
+       Strict       = SPF ohne "-all" und DMARC "p=none" als Fehler werten
+       Summary      = vor JSON eine Tabelle anzeigen
 
-.PARAMETER DomainSearch
-  Suchmuster fuer list_zones (Wildcards erlaubt).
+60-70  Beispiele: zeigen, wie man das Skript aufruft.
 
-.PARAMETER OutputJson
-  Dateipfad fuer den JSON-Report.
-
-.PARAMETER AltRoot
-  Alternative Root fuer DKIM-Delegation (Standard: rwth-aachen.de).
-
-.PARAMETER IncludeDrafts
-  Bezieht Records mit Status "draft" ein.
-
-.PARAMETER VerboseZones
-  Zeigt bei -VerboseOutput Zusatzinfos zur Zone.
-
-.PARAMETER DebugHttp
-  Hebt jede HTTP-Anfrage hervor.
-
-.PARAMETER VerboseOutput
-  Ausfuehrliche Fortschrittsmeldungen (Alias: -Verbose).
-
-.PARAMETER Strict
-  Wandelt SPF ohne "-all" sowie DMARC "p=none" in Fehler.
-
-.PARAMETER Summary
-  Gibt vor dem JSON eine tabellarische Uebersicht aus.
-
-.EXAMPLE
-  $env:DNS_API_TOKEN = "..."
-  .\Check-MailDns.ps1 -ApiBase "https://.../api/v1" -Domains "rwth-aachen.de" -Summary -OutputJson .\reports\maildns.json
-
-.EXAMPLE
-  $domains = Get-Content .\maildomains.txt
-  .\Check-MailDns.ps1 -ApiBase "https://.../api/v1" -Domains $domains -Summary
-
-.EXAMPLE
-  .\Check-MailDns.ps1 -ApiBase "https://.../api/v1" -Domains $domains -DomainSearch "*.rwth-aachen.de" -Summary
-
-.NOTES
-  - Laeuft auf Windows PowerShell 5.1 und PowerShell 7+.
-  - Scriptdatei als UTF-8 speichern (Konsole bleibt ASCII-freundlich).
-  - Exitcodes: 0=OK | 1=Warnungen | 2=Fehler.
-  - Fehlt eine Domains-Liste, wird automatisch maildomains.txt (oder smallmaildomains.txt) eingelesen.
-  - Mehrzeilige Aufrufe benoetigen einen Backtick (`) am Zeilenende.
+71-76  Hinweise:
+       - PowerShell 5.1 und 7+ werden unterstuetzt.
+       - UTF-8-Speicherung empfohlen.
+       - Exitcodes: 0=OK, 1=Warnung, 2=Fehler.
+       - Ohne Domains werden automatisch Dateien gesucht.
 #>
 
 
@@ -97,10 +67,16 @@ if ([string]::IsNullOrWhiteSpace($ApiBase) -or ($ApiBase -notmatch '^https?://.+
 }
 
 # ============================================================================
-# SECTION 1 - Konsoleneinstellungen und Grundkonfiguration
-#   Dieser Block stellt die Codepage auf UTF-8 um und prueft, ob die
-#   wichtigsten Pflichtparameter gesetzt sind. Nur so koennen nachfolgende
-#   HTTP-Aufrufe reproduzierbar funktionieren.
+# SECTION 1 - Konsoleneinstellungen und Grundkonfiguration (einfach erklaert)
+#   Zeile fuer Zeile:
+#   - $ShowVerbose merkt sich, ob wir detaillierte Ausgaben zeigen sollen.
+#   - chcp 65001 und OutputEncoding stellen UTF-8 ein (Umlaute korrekt).
+#   - ErrorActionPreference = Stop -> Fehler stoppen sofort das Skript.
+#   - Fehlt das Token, wird abgebrochen (ohne Auth keine API).
+#   - $Headers enthaelt den Authorization-Header.
+#   - $ApiBase wird normalisiert (kein Slash am Ende).
+#   - $Domains/$DomainSearch werden auf leere Arrays gesetzt, falls $null.
+#   - Caches fuer spaetere Abfragen werden vorbereitet.
 # ============================================================================
 $ShowVerbose = $VerboseOutput.IsPresent
 
@@ -119,10 +95,12 @@ if (-not $script:AltRootZoneCache) { $script:AltRootZoneCache = @{} }
 if (-not $script:RecordCache)    { $script:RecordCache    = @{} }
 
 # ============================================================================
-# SECTION 5A - Default-Domain-Fallback
-#   CI-Umgebungen liefern nicht immer eine Domains-Liste. Wir versuchen deshalb,
-#   automatisch eine lokale maildomains.txt (oder Alternativen) zu laden, bevor
-#   wir mit einem Fehler abbrechen.
+# SECTION 5A - Default-Domain-Fallback (einfach erklaert)
+#   Zeile fuer Zeile:
+#   - Wir suchen nach Dateien wie maildomains.txt oder smallmaildomains.txt.
+#   - Wir pruefen Script-Ordner, aktuelles Verzeichnis und deren Eltern.
+#   - Wird eine Datei gefunden, laden wir sie als Domainliste.
+#   - Kommentare und Leerzeilen werden entfernt.
 # ============================================================================
 function Get-FallbackDomainFile {
   $locations = [System.Collections.Generic.List[string]]::new()
@@ -185,10 +163,10 @@ function Import-FallbackDomains {
 }
 
 # ============================================================================
-# SECTION 2 - Logging-Helfer
-#   Einheitliche Wrapper, damit saemtliche Debug-Ausgaben an einer Stelle
-#   kontrolliert werden. Besonders hilfreich, wenn Lernende verstehen wollen,
-#   welche HTTP-Aufrufe gerade passieren.
+# SECTION 2 - Logging-Helfer (einfach erklaert)
+#   Zeile fuer Zeile:
+#   - Write-DebugHttp zeigt HTTP-Aufrufe in Farbe (nur bei Debug/Verbose).
+#   - Write-Info zeigt allgemeine Infos nur im Verbose-Modus.
 # ============================================================================
 function Write-DebugHttp {
   param([string]$Message)
@@ -206,11 +184,12 @@ function Write-Info {
 }
 
 # ============================================================================
-# SECTION 3 - HTTP-Hilfsfunktionen
-#   Die RWTH-DNS-API akzeptiert GET-Anfragen entweder mit Request-Body oder
-#   Query-String. Wir probieren stets erst die dokumentierte Variante (Body)
-#   und greifen bei Bedarf auf Query-String zurueck. Die Funktionen werden in
-#   allen spaeteren Abfragen wiederverwendet.
+# SECTION 3 - HTTP-Hilfsfunktionen (einfach erklaert)
+#   Zeile fuer Zeile:
+#   - Invoke-ApiGet baut eine GET-Anfrage (entweder Body oder Querystring).
+#   - Invoke-ApiGetBoth probiert beide Varianten und sammelt Ergebnisse.
+#   - Invoke-ApiGetAll gibt immer ein Array zurueck (auch bei Fehler -> leer).
+#   - Test-ApiConnectivity prueft Token und list_zones zur API-Verbindung.
 # ============================================================================
 function Invoke-ApiGet {
   param(
@@ -283,10 +262,13 @@ function Test-ApiConnectivity {
 Test-ApiConnectivity
 
 # ============================================================================
-# SECTION 5 - Utility-Funktionen fuer Textaufbereitung und Suchmuster
-#   Diese Funktionen bereiten Rohdaten der API auf (Semikola entfernen,
-#   Wildcards erzeugen, Punkt am Ende abschneiden). Dadurch wird das Matching
-#   spaeter deutlich leichter nachvollziehbar.
+# SECTION 5 - Utility-Funktionen fuer Textaufbereitung (einfach erklaert)
+#   Zeile fuer Zeile:
+#   - Format-SearchPattern macht aus "abc" -> "*abc*" (falls kein Wildcard).
+#   - Remove-Comment entfernt Kommentare nach ';' (ausser in Anfuehrungszeichen).
+#   - Remove-TrailingDot entfernt den Punkt am Ende einer Domain.
+#   - ConvertTo-CleanArray entfernt Nulls/Leerstrings/Duplikate.
+#   - Expand-InputCollection macht aus beliebigen Listen ein String-Array.
 # ============================================================================
 function Format-SearchPattern {
   <# "abc" -> "*abc*"; bereits vorhandene Wildcards bleiben erhalten. #>
@@ -365,12 +347,12 @@ function Expand-InputCollection {
 }
 
 # ============================================================================
-# SECTION 6 - Zonen- und Recordabfragen
-#   Hier sitzt die komplette Logik, um list_zones und list_records robust gegen
-#   API-Eigenheiten zu machen. Auszubildende koennen sehen, welche Fallbacks
-#   greifen, wenn ein Request-Typ nicht funktioniert. Neu ist hier ausserdem,
-#   dass wir mehrere Suchmuster (genau, *prefix, prefix*, *prefix*) durchprobieren,
-#   weil einzelne Mandanteninstanzen nur bestimmte Varianten akzeptieren.
+# SECTION 6 - Zonen- und Recordabfragen (einfach erklaert)
+#   Zeile fuer Zeile:
+#   - Get-Zones fragt Zonen ab und nutzt mehrere Suchmuster + Cache.
+#   - Get-PrimaryZoneForFqdn sucht die "beste" Zone (laengster Suffix-Match).
+#   - Find-Records sucht Records, filtert Drafts und entfernt Duplikate.
+#   - Get-RecordSearchTerms erzeugt Suchbegriffe (z.B. '@' oder relative Namen).
 # ============================================================================
 function Get-Zones {
   param([string]$Search='*')
@@ -541,10 +523,14 @@ function Get-RecordSearchTerms {
 }
 
 # ============================================================================
-# SECTION 7 - Regexe und Einzelpruefungen
-#   Die folgenden Pruefungen decken die benoetigten Mail-Records ab. Jede
-#   Funktion verarbeitet genau einen Record-Typ und liefert strukturierte
-#   Informationen fuer die spaetere Bewertung.
+# SECTION 7 - Regexe und Einzelpruefungen (einfach erklaert)
+#   Zeile fuer Zeile:
+#   - Regexe definieren, wie wir MX/TXT/SRV/DMARC/SPF erkennen.
+#   - Test-MX sucht MX-Records und liest Preference + Ziel aus.
+#   - Test-SPF findet v=spf1-Records und prueft "-all".
+#   - Test-DMARC findet _dmarc-Records und liest die Policy.
+#   - Test-DKIM sucht _domainkey-Records (TXT oder CNAME).
+#   - Test-SRV443 prueft Autodiscover auf Port 443.
 # ============================================================================
 $reMX     = [regex] '^\s*(?<name>\S+)\s+(?:(?<ttl>\d+)\s+)?IN\s+MX\s+(?<pref>\d+)\s+(?<target>\S+)'
 $reTXT    = [regex] '\sIN\sTXT\s'
@@ -667,9 +653,11 @@ function Test-SRV443 {
 }
 
 # ============================================================================
-# SECTION 8 - Domainlisten aufbereiten und Einzelberichte generieren
-#   Dieser Abschnitt kombiniert alle Bausteine: wir erzeugen eine eindeutige
-#   Liste zu pruefender Domains und erzeugen fuer jeden Eintrag ein Reportobjekt.
+# SECTION 8 - Domainlisten + Reports (einfach erklaert)
+#   Zeile fuer Zeile:
+#   - Resolve-DomainList baut eine eindeutige Domainliste (manuell + Suche).
+#   - Invoke-DomainAudit fuehrt alle Checks fuer eine Domain aus.
+#   - Danach werden die Domains nacheinander geprueft.
 # ============================================================================
 function Resolve-DomainList {
   param([string[]]$Manual,[string[]]$SearchPatterns)
@@ -794,10 +782,11 @@ $domainReports = foreach ($domain in $domainInputs) {
 }
 
 # ============================================================================
-# SECTION 9 - Zusammenfassung und Ausgabe
-#   Die Ergebnisse werden zunaechst auf Wunsch als Tabelle dargestellt und
-#   anschliessend als JSON ausgegeben. So koennen Menschen wie Maschinen mit den
-#   Resultaten arbeiten.
+# SECTION 9 - Zusammenfassung und Ausgabe (einfach erklaert)
+#   Zeile fuer Zeile:
+#   - Optional: Tabelle mit OK/WARN/FAIL anzeigen.
+#   - Immer: JSON-Report erzeugen und ausgeben.
+#   - Optional: JSON in Datei speichern.
 # ============================================================================
 if ($Summary) {
   Write-Host "`n=== Zusammenfassung ===`n" -ForegroundColor Cyan
@@ -843,9 +832,11 @@ if ($OutputJson -and $OutputJson.Trim()) {
 }
 
 # ============================================================================
-# SECTION 10 - Exitcodes fuer Automatisierung
-#   Die Rueckgabewerte orientieren sich an klassischen CI/CD-Konventionen, damit
-#   Pipelines das Ergebnis direkt auswerten koennen.
+# SECTION 10 - Exitcodes (einfach erklaert)
+#   Zeile fuer Zeile:
+#   - Wenn irgendein FAIL -> exit 2
+#   - Wenn nur WARN -> exit 1
+#   - Sonst -> exit 0
 # ============================================================================
 $hasFail = $domainReports | Where-Object { $_.status -like 'FAIL*' }
 $hasWarn = $domainReports | Where-Object { $_.status -like 'WARN*' }
