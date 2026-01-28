@@ -36,6 +36,14 @@ Der Code selbst bleibt unveraendert; nur die Erklaerungen wurden angepasst.
        VerboseOutput= ausfuehrliche Fortschrittsmeldungen
        Strict       = SPF ohne "-all" und DMARC "p=none" als Fehler werten
        Summary      = vor JSON eine Tabelle anzeigen
+       SmtpServer   = SMTP-Server fuer Fehlerberichte
+       SmtpPort     = SMTP-Port (Standard 25)
+       SmtpFrom     = Absenderadresse fuer Fehlerberichte
+       SmtpTo       = Empfaengeradresse(n) fuer Fehlerberichte
+       SmtpUser     = optionaler SMTP-Benutzer
+       SmtpPassword = optionales SMTP-Passwort
+       SmtpUseSsl   = SMTP mit SSL/TLS verwenden
+       SmtpSubject  = Betreff fuer Fehlerberichte
 
 60-70  Beispiele: zeigen, wie man das Skript aufruft.
 
@@ -59,7 +67,15 @@ param(
   [switch]$DebugHttp,
   [switch]$Strict,
   [switch]$Summary,
-  [Alias('Verbose')][switch]$VerboseOutput
+  [Alias('Verbose')][switch]$VerboseOutput,
+  [string]$SmtpServer,
+  [int]$SmtpPort = 25,
+  [string]$SmtpFrom,
+  [string[]]$SmtpTo,
+  [string]$SmtpUser,
+  [string]$SmtpPassword,
+  [switch]$SmtpUseSsl,
+  [string]$SmtpSubject = 'Mail-DNS-Check Fehlerbericht'
 )
 
 if ([string]::IsNullOrWhiteSpace($ApiBase) -or ($ApiBase -notmatch '^https?://.+')) {
@@ -180,6 +196,64 @@ function Write-Info {
   param([string]$Message)
   if ($ShowVerbose) {
     Write-Host $Message -ForegroundColor DarkGray
+  }
+}
+
+function Send-ErrorReport {
+  param(
+    [Parameter(Mandatory=$true)][string]$ReportJson,
+    [Parameter(Mandatory=$true)][object[]]$DomainReports,
+    [string]$ReportPath
+  )
+
+  if (-not $SmtpServer -or -not $SmtpFrom -or -not $SmtpTo -or $SmtpTo.Count -eq 0) {
+    Write-Info 'SMTP-Fehlerbericht uebersprungen (SmtpServer/SmtpFrom/SmtpTo fehlen).'
+    return
+  }
+
+  $failCount = ($DomainReports | Where-Object { $_.status -like 'FAIL*' }).Count
+  $warnCount = ($DomainReports | Where-Object { $_.status -like 'WARN*' }).Count
+  $subjectValue = if ($SmtpSubject -and $SmtpSubject.Trim()) { $SmtpSubject } else { 'Mail-DNS-Check Fehlerbericht' }
+
+  $body = @"
+Mail-DNS-Check: Fehler erkannt.
+Zeitpunkt (UTC): $((Get-Date).ToUniversalTime().ToString('o'))
+Domains: $($DomainReports.Count)
+Fehler: $failCount
+Warnungen: $warnCount
+
+Report (JSON):
+$ReportJson
+"@
+
+  $mailParams = @{
+    SmtpServer = $SmtpServer
+    Port       = $SmtpPort
+    From       = $SmtpFrom
+    To         = ($SmtpTo -join ',')
+    Subject    = $subjectValue
+    Body       = $body
+    ErrorAction= 'Stop'
+  }
+
+  if ($SmtpUseSsl) {
+    $mailParams.UseSsl = $true
+  }
+
+  if ($SmtpUser -and $SmtpPassword) {
+    $securePassword = ConvertTo-SecureString $SmtpPassword -AsPlainText -Force
+    $mailParams.Credential = [pscredential]::new($SmtpUser, $securePassword)
+  }
+
+  if ($ReportPath -and (Test-Path -LiteralPath $ReportPath)) {
+    $mailParams.Attachments = $ReportPath
+  }
+
+  try {
+    Send-MailMessage @mailParams
+    Write-Info 'Fehlerbericht per SMTP versendet.'
+  } catch {
+    Write-Warning ('SMTP-Fehlerbericht konnte nicht gesendet werden: {0}' -f $_.Exception.Message)
   }
 }
 
@@ -841,6 +915,9 @@ if ($OutputJson -and $OutputJson.Trim()) {
 $hasFail = $domainReports | Where-Object { $_.status -like 'FAIL*' }
 $hasWarn = $domainReports | Where-Object { $_.status -like 'WARN*' }
 
-if ($hasFail) { exit 2 }
+if ($hasFail) {
+  Send-ErrorReport -ReportJson $reportJson -DomainReports $domainReports -ReportPath $OutputJson
+  exit 2
+}
 elseif ($hasWarn) { exit 1 }
 else { exit 0 }
