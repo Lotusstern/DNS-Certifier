@@ -1,8 +1,5 @@
 <#
-EINFACHE ZEILE-FUER-ZEILE-ERKLAERUNG (BEGINNER)
 
-Hinweis: Diese Kommentare erklaeren die nachfolgenden Codezeilen Schritt fuer Schritt.
-Der Code selbst bleibt unveraendert; nur die Erklaerungen wurden angepasst.
 
 01-03  Was macht das Skript?
        Es prueft Mail-DNS-Eintraege (MX, SPF, DMARC, DKIM, Autodiscover) fuer Domains.
@@ -83,8 +80,7 @@ if ([string]::IsNullOrWhiteSpace($ApiBase) -or ($ApiBase -notmatch '^https?://.+
 }
 
 # ============================================================================
-# SECTION 1 - Konsoleneinstellungen und Grundkonfiguration (einfach erklaert)
-#   Zeile fuer Zeile:
+# SECTION 1 - Konsoleneinstellungen und Grundkonfiguration
 #   - $ShowVerbose merkt sich, ob wir detaillierte Ausgaben zeigen sollen.
 #   - chcp 65001 und OutputEncoding stellen UTF-8 ein (Umlaute korrekt).
 #   - ErrorActionPreference = Stop -> Fehler stoppen sofort das Skript.
@@ -111,8 +107,7 @@ if (-not $script:AltRootZoneCache) { $script:AltRootZoneCache = @{} }
 if (-not $script:RecordCache)    { $script:RecordCache    = @{} }
 
 # ============================================================================
-# SECTION 5A - Default-Domain-Fallback (einfach erklaert)
-#   Zeile fuer Zeile:
+# SECTION 5A - Default-Domain-Fallback
 #   - Wir suchen nach Dateien wie maildomains.txt oder smallmaildomains.txt.
 #   - Wir pruefen Script-Ordner, aktuelles Verzeichnis und deren Eltern.
 #   - Wird eine Datei gefunden, laden wir sie als Domainliste.
@@ -179,8 +174,7 @@ function Import-FallbackDomains {
 }
 
 # ============================================================================
-# SECTION 2 - Logging-Helfer (einfach erklaert)
-#   Zeile fuer Zeile:
+# SECTION 2 - Logging-Helfer
 #   - Write-DebugHttp zeigt HTTP-Aufrufe in Farbe (nur bei Debug/Verbose).
 #   - Write-Info zeigt allgemeine Infos nur im Verbose-Modus.
 # ============================================================================
@@ -258,8 +252,7 @@ $ReportJson
 }
 
 # ============================================================================
-# SECTION 3 - HTTP-Hilfsfunktionen (einfach erklaert)
-#   Zeile fuer Zeile:
+# SECTION 3 - HTTP-Hilfsfunktionen
 #   - Invoke-ApiGet baut eine GET-Anfrage (entweder Body oder Querystring).
 #   - Invoke-ApiGetBoth probiert beide Varianten und sammelt Ergebnisse.
 #   - Invoke-ApiGetAll gibt immer ein Array zurueck (auch bei Fehler -> leer).
@@ -336,8 +329,7 @@ function Test-ApiConnectivity {
 Test-ApiConnectivity
 
 # ============================================================================
-# SECTION 5 - Utility-Funktionen fuer Textaufbereitung (einfach erklaert)
-#   Zeile fuer Zeile:
+# SECTION 5 - Utility-Funktionen fuer Textaufbereitung
 #   - Format-SearchPattern macht aus "abc" -> "*abc*" (falls kein Wildcard).
 #   - Remove-Comment entfernt Kommentare nach ';' (ausser in Anfuehrungszeichen).
 #   - Remove-TrailingDot entfernt den Punkt am Ende einer Domain.
@@ -421,8 +413,7 @@ function Expand-InputCollection {
 }
 
 # ============================================================================
-# SECTION 6 - Zonen- und Recordabfragen (einfach erklaert)
-#   Zeile fuer Zeile:
+# SECTION 6 - Zonen- und Recordabfragen
 #   - Get-Zones fragt Zonen ab und nutzt mehrere Suchmuster + Cache.
 #   - Get-PrimaryZoneForFqdn sucht die "beste" Zone (laengster Suffix-Match).
 #   - Find-Records sucht Records, filtert Drafts und entfernt Duplikate.
@@ -597,8 +588,7 @@ function Get-RecordSearchTerms {
 }
 
 # ============================================================================
-# SECTION 7 - Regexe und Einzelpruefungen (einfach erklaert)
-#   Zeile fuer Zeile:
+# SECTION 7 - Regexe und Einzelpruefungen
 #   - Regexe definieren, wie wir MX/TXT/SRV/DMARC/SPF erkennen.
 #   - Test-MX sucht MX-Records und liest Preference + Ziel aus.
 #   - Test-SPF findet v=spf1-Records und prueft "-all".
@@ -727,8 +717,7 @@ function Test-SRV443 {
 }
 
 # ============================================================================
-# SECTION 8 - Domainlisten + Reports (einfach erklaert)
-#   Zeile fuer Zeile:
+# SECTION 8 - Domainlisten + Reports
 #   - Resolve-DomainList baut eine eindeutige Domainliste (manuell + Suche).
 #   - Invoke-DomainAudit fuehrt alle Checks fuer eine Domain aus.
 #   - Danach werden die Domains nacheinander geprueft.
@@ -856,8 +845,7 @@ $domainReports = foreach ($domain in $domainInputs) {
 }
 
 # ============================================================================
-# SECTION 9 - Zusammenfassung und Ausgabe (einfach erklaert)
-#   Zeile fuer Zeile:
+# SECTION 9 - Zusammenfassung und Ausgabe
 #   - Optional: Tabelle mit OK/WARN/FAIL anzeigen.
 #   - Immer: JSON-Report erzeugen und ausgeben.
 #   - Optional: JSON in Datei speichern.
@@ -906,8 +894,7 @@ if ($OutputJson -and $OutputJson.Trim()) {
 }
 
 # ============================================================================
-# SECTION 10 - Exitcodes (einfach erklaert)
-#   Zeile fuer Zeile:
+# SECTION 10 - Exitcodes
 #   - Wenn irgendein FAIL -> exit 2
 #   - Wenn nur WARN -> exit 1
 #   - Sonst -> exit 0
