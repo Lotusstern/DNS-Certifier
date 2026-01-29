@@ -210,24 +210,54 @@ function Send-ErrorReport {
   $warnCount = ($DomainReports | Where-Object { $_.status -like 'WARN*' }).Count
   $subjectValue = if ($SmtpSubject -and $SmtpSubject.Trim()) { $SmtpSubject } else { 'Mail-DNS-Check Fehlerbericht' }
 
-  $summaryBlock = if ($SummaryTable -and $SummaryTable.Trim()) {
-@"
-Zusammenfassung:
-$SummaryTable
+  $summaryRows = @(Get-SummaryRows -DomainReports $DomainReports -StrictMode:$Strict)
+  $summaryBlock = if ($summaryRows.Count -gt 0) {
+    $headerCells = @('Domain','Status','MX','SPF','DMARC','DKIM','SRV443') |
+      ForEach-Object { '<th style="border: 1px solid #ddd; padding: 6px 8px; text-align: left; background: #f0f0f0;">{0}</th>' -f ([System.Net.WebUtility]::HtmlEncode($_)) }
 
+    $rowCells = foreach ($row in $summaryRows) {
+      $cells = @(
+        $row.Domain,
+        $row.Status,
+        $row.MX,
+        $row.SPF,
+        $row.DMARC,
+        $row.DKIM,
+        $row.SRV443
+      ) | ForEach-Object { '<td style="border: 1px solid #ddd; padding: 6px 8px; white-space: nowrap;">{0}</td>' -f ([System.Net.WebUtility]::HtmlEncode([string]$_)) }
+      "<tr>$($cells -join '')</tr>"
+    }
+
+@"
+<h3 style="margin-bottom: 6px;">Zusammenfassung</h3>
+<table style="border-collapse: collapse; font-family: Arial, sans-serif; font-size: 13px;">
+  <thead>
+    <tr>$($headerCells -join '')</tr>
+  </thead>
+  <tbody>
+    $($rowCells -join "`n    ")
+  </tbody>
+</table>
 "@
   } else { '' }
 
-  $body = @"
-Mail-DNS-Check: Fehler erkannt.
-Zeitpunkt (UTC): $((Get-Date).ToUniversalTime().ToString('o'))
-Domains: $($DomainReports.Count)
-Fehler: $failCount
-Warnungen: $warnCount
+  $encodedReport = [System.Net.WebUtility]::HtmlEncode($ReportJson)
 
-$summaryBlock
-Report (JSON):
-$ReportJson
+  $body = @"
+<html>
+  <body style="font-family: Arial, sans-serif; color: #222;">
+    <p style="margin: 0 0 12px 0;">
+      <strong>Mail-DNS-Check: Fehler erkannt.</strong><br/>
+      Zeitpunkt (UTC): $((Get-Date).ToUniversalTime().ToString('o'))<br/>
+      Domains: $($DomainReports.Count)<br/>
+      Fehler: $failCount<br/>
+      Warnungen: $warnCount
+    </p>
+    $summaryBlock
+    <h3 style="margin-bottom: 6px;">Report (JSON)</h3>
+    <pre style="background: #f7f7f7; padding: 12px; border-radius: 6px; font-family: Consolas, Monaco, 'Courier New', monospace; white-space: pre-wrap;">$encodedReport</pre>
+  </body>
+</html>
 "@
 
   $mailParams = @{
@@ -237,6 +267,7 @@ $ReportJson
     To         = ($SmtpTo -join ',')
     Subject    = $subjectValue
     Body       = $body
+    BodyAsHtml = $true
     ErrorAction= 'Stop'
   }
 
