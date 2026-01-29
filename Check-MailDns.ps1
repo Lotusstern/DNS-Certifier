@@ -198,7 +198,8 @@ function Send-ErrorReport {
     [Parameter(Mandatory=$true)][string]$ReportJson,
     [Parameter(Mandatory=$true)][object[]]$DomainReports,
     [string]$ReportPath,
-    [string]$SummaryHtml
+    [string]$SummaryHtml,
+    [string]$SummaryText
   )
 
   if (-not $SmtpServer -or -not $SmtpFrom -or -not $SmtpTo -or $SmtpTo.Count -eq 0) {
@@ -211,9 +212,16 @@ function Send-ErrorReport {
   $subjectValue = if ($SmtpSubject -and $SmtpSubject.Trim()) { $SmtpSubject } else { 'Mail-DNS-Check Fehlerbericht' }
 
   $encodedReport = [System.Net.WebUtility]::HtmlEncode($ReportJson)
-  $summaryBlock = if ($SummaryHtml -and $SummaryHtml.Trim()) {
+  $summaryTextBlock = if ($SummaryText -and $SummaryText.Trim()) {
+@"
+<pre style="background: #f7f7f7; padding: 12px; border-radius: 6px; font-family: Consolas, Monaco, 'Courier New', monospace; white-space: pre; margin: 0 0 12px 0;">$SummaryText</pre>
+"@
+  } else { '' }
+
+  $summaryBlock = if (($SummaryHtml -and $SummaryHtml.Trim()) -or $summaryTextBlock) {
 @"
 <h3 style="margin-bottom: 6px;">Zusammenfassung</h3>
+$summaryTextBlock
 $SummaryHtml
 "@
   } else { '' }
@@ -893,11 +901,18 @@ function Get-SummaryRows {
   }
 }
 
-function Format-SummaryTable {
+function Format-SummaryTextTable {
   param([Parameter(Mandatory=$true)][object[]]$Rows)
 
   if ($Rows.Count -eq 0) { return '' }
-  ($Rows | Format-Table -AutoSize | Out-String).TrimEnd()
+
+  $headers = @('Domain','Status','MX','SPF','DMARC','DKIM','SRV443')
+  $lines = [System.Collections.Generic.List[string]]::new()
+  $lines.Add(($headers -join ' | ')) | Out-Null
+  foreach ($row in $Rows) {
+    $lines.Add(('{0} | {1} | {2} | {3} | {4} | {5} | {6}' -f $row.Domain, $row.Status, $row.MX, $row.SPF, $row.DMARC, $row.DKIM, $row.SRV443)) | Out-Null
+  }
+  ($lines -join "`n")
 }
 
 function Format-SummaryHtmlTable {
@@ -957,12 +972,12 @@ function Format-SummaryHtmlTable {
 #   - Optional: JSON in Datei speichern.
 # ============================================================================
 $summaryRows = @(Get-SummaryRows -DomainReports $domainReports -StrictMode:$Strict)
-$summaryTable = Format-SummaryTable -Rows $summaryRows
+$summaryTable = Format-SummaryTextTable -Rows $summaryRows
 $summaryHtml = Format-SummaryHtmlTable -Rows $summaryRows
 
 if ($Summary) {
   Write-Host "`n=== Zusammenfassung ===`n" -ForegroundColor Cyan
-  $summaryRows | Format-Table -AutoSize
+  Write-Host $summaryTable
   Write-Host ''
 }
 
@@ -993,7 +1008,8 @@ $hasWarn = $domainReports | Where-Object { $_.status -like 'WARN*' }
 
 if ($hasFail) {
   $summaryForMail = if ($Summary) { $summaryHtml } else { '' }
-  Send-ErrorReport -ReportJson $reportJson -DomainReports $domainReports -ReportPath $OutputJson -SummaryHtml $summaryForMail
+  $summaryTextForMail = if ($Summary) { $summaryTable } else { '' }
+  Send-ErrorReport -ReportJson $reportJson -DomainReports $domainReports -ReportPath $OutputJson -SummaryHtml $summaryForMail -SummaryText $summaryTextForMail
   exit 2
 }
 elseif ($hasWarn) { exit 1 }
