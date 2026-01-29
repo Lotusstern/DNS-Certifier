@@ -198,8 +198,7 @@ function Send-ErrorReport {
     [Parameter(Mandatory=$true)][string]$ReportJson,
     [Parameter(Mandatory=$true)][object[]]$DomainReports,
     [string]$ReportPath,
-    [string]$SummaryHtml,
-    [string]$SummaryText
+    [string]$SummaryHtml
   )
 
   if (-not $SmtpServer -or -not $SmtpFrom -or -not $SmtpTo -or $SmtpTo.Count -eq 0) {
@@ -212,16 +211,9 @@ function Send-ErrorReport {
   $subjectValue = if ($SmtpSubject -and $SmtpSubject.Trim()) { $SmtpSubject } else { 'Mail-DNS-Check Fehlerbericht' }
 
   $encodedReport = [System.Net.WebUtility]::HtmlEncode($ReportJson)
-  $summaryTextBlock = if ($SummaryText -and $SummaryText.Trim()) {
-@"
-<pre style="background: #f7f7f7; padding: 12px; border-radius: 6px; font-family: Consolas, Monaco, 'Courier New', monospace; white-space: pre; margin: 0 0 12px 0;">$SummaryText</pre>
-"@
-  } else { '' }
-
-  $summaryBlock = if (($SummaryHtml -and $SummaryHtml.Trim()) -or $summaryTextBlock) {
+  $summaryBlock = if ($SummaryHtml -and $SummaryHtml.Trim()) {
 @"
 <h3 style="margin-bottom: 6px;">Zusammenfassung</h3>
-$summaryTextBlock
 $SummaryHtml
 "@
   } else { '' }
@@ -1008,9 +1000,10 @@ $hasFail = $domainReports | Where-Object { $_.status -like 'FAIL*' }
 $hasWarn = $domainReports | Where-Object { $_.status -like 'WARN*' }
 
 if ($hasFail) {
-  $summaryForMail = if ($Summary) { $summaryHtml } else { '' }
-  $summaryTextForMail = if ($Summary) { $summaryTable } else { '' }
-  Send-ErrorReport -ReportJson $reportJson -DomainReports $domainReports -ReportPath $OutputJson -SummaryHtml $summaryForMail -SummaryText $summaryTextForMail
+  $failedReports = $domainReports | Where-Object { $_.status -like 'FAIL*' }
+  $summaryRowsForMail = if ($Summary) { @(Get-SummaryRows -DomainReports $failedReports -StrictMode:$Strict) } else { @() }
+  $summaryForMail = if ($Summary) { Format-SummaryHtmlTable -Rows $summaryRowsForMail } else { '' }
+  Send-ErrorReport -ReportJson $reportJson -DomainReports $domainReports -ReportPath $OutputJson -SummaryHtml $summaryForMail
   exit 2
 }
 elseif ($hasWarn) { exit 1 }
