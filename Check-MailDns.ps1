@@ -905,12 +905,24 @@ function Format-SummaryHtmlTable {
 
   if ($Rows.Count -eq 0) { return '' }
 
-  $headerCells = @('Domain','Status','MX','SPF','DMARC','DKIM','SRV443') |
-    ForEach-Object { '<th style="border: 1px solid #ddd; padding: 6px 8px; text-align: left; background: #f2f2f2;">{0}</th>' -f $_ }
+  $columnDefs = @(
+    @{ Name = 'Domain'; Width = '42%'; Align = 'left'; Wrap = 'break-all' },
+    @{ Name = 'Status'; Width = '12%'; Align = 'left'; Wrap = 'normal' },
+    @{ Name = 'MX'; Width = '7%'; Align = 'center'; Wrap = 'nowrap' },
+    @{ Name = 'SPF'; Width = '7%'; Align = 'center'; Wrap = 'nowrap' },
+    @{ Name = 'DMARC'; Width = '9%'; Align = 'center'; Wrap = 'nowrap' },
+    @{ Name = 'DKIM'; Width = '7%'; Align = 'center'; Wrap = 'nowrap' },
+    @{ Name = 'SRV443'; Width = '8%'; Align = 'center'; Wrap = 'nowrap' }
+  )
+
+  $headerCells = $columnDefs |
+    ForEach-Object {
+      '<th width="{0}" align="{1}" style="border: 1px solid #ddd; padding: 6px 8px; text-align: {1}; background: #f2f2f2; font-weight: bold; font-family: Arial, sans-serif; font-size: 12px; line-height: 1.3;">{2}</th>' -f $_.Width, $_.Align, $_.Name
+    }
   $header = '<tr>{0}</tr>' -f ($headerCells -join '')
 
   $bodyRows = foreach ($row in $Rows) {
-    $cells = @(
+    $values = @(
       $row.Domain,
       $row.Status,
       $row.MX,
@@ -918,15 +930,18 @@ function Format-SummaryHtmlTable {
       $row.DMARC,
       $row.DKIM,
       $row.SRV443
-    ) | ForEach-Object {
-      $value = [System.Net.WebUtility]::HtmlEncode([string]$_)
-      '<td style="border: 1px solid #ddd; padding: 6px 8px;">{0}</td>' -f $value
+    )
+    $cells = for ($i = 0; $i -lt $columnDefs.Count; $i++) {
+      $definition = $columnDefs[$i]
+      $value = [System.Net.WebUtility]::HtmlEncode([string]$values[$i])
+      $wrapStyle = if ($definition.Wrap -eq 'nowrap') { 'white-space: nowrap;' } elseif ($definition.Wrap -eq 'break-all') { 'word-break: break-all;' } else { '' }
+      '<td width="{0}" align="{1}" style="border: 1px solid #ddd; padding: 6px 8px; text-align: {1}; font-family: Arial, sans-serif; font-size: 12px; line-height: 1.3; {2}">{3}</td>' -f $definition.Width, $definition.Align, $wrapStyle, $value
     }
     '<tr>{0}</tr>' -f ($cells -join '')
   }
 
-  @"
-<table style="border-collapse: collapse; font-family: Arial, sans-serif; font-size: 12px;">
+@"
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse: collapse; font-family: Arial, sans-serif; font-size: 12px; table-layout: fixed; mso-table-lspace: 0pt; mso-table-rspace: 0pt;">
   <thead>$header</thead>
   <tbody>
     $($bodyRows -join "`n")
