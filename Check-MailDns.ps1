@@ -901,18 +901,19 @@ function Get-SummaryRows {
   }
 }
 
-function Format-SummaryTextTable {
+function Format-SummaryTextList {
   param([Parameter(Mandatory=$true)][object[]]$Rows)
 
   if ($Rows.Count -eq 0) { return '' }
 
-  $headers = @('Domain','Status','MX','SPF','DMARC','DKIM','SRV443')
   $lines = [System.Collections.Generic.List[string]]::new()
-  $lines.Add(($headers -join ' | ')) | Out-Null
   foreach ($row in $Rows) {
-    $lines.Add(('{0} | {1} | {2} | {3} | {4} | {5} | {6}' -f $row.Domain, $row.Status, $row.MX, $row.SPF, $row.DMARC, $row.DKIM, $row.SRV443)) | Out-Null
+    $lines.Add(('Domain: {0}' -f $row.Domain)) | Out-Null
+    $lines.Add(('  Status: {0}' -f $row.Status)) | Out-Null
+    $lines.Add(('  Checks: MX={0} SPF={1} DMARC={2} DKIM={3} SRV443={4}' -f $row.MX, $row.SPF, $row.DMARC, $row.DKIM, $row.SRV443)) | Out-Null
+    $lines.Add('') | Out-Null
   }
-  ($lines -join "`n")
+  ($lines -join "`n").TrimEnd()
 }
 
 function Format-SummaryHtmlTable {
@@ -972,7 +973,7 @@ function Format-SummaryHtmlTable {
 #   - Optional: JSON in Datei speichern.
 # ============================================================================
 $summaryRows = @(Get-SummaryRows -DomainReports $domainReports -StrictMode:$Strict)
-$summaryTable = Format-SummaryTextTable -Rows $summaryRows
+$summaryTable = Format-SummaryTextList -Rows $summaryRows
 $summaryHtml = Format-SummaryHtmlTable -Rows $summaryRows
 
 if ($Summary) {
