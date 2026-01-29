@@ -210,24 +210,30 @@ function Send-ErrorReport {
   $warnCount = ($DomainReports | Where-Object { $_.status -like 'WARN*' }).Count
   $subjectValue = if ($SmtpSubject -and $SmtpSubject.Trim()) { $SmtpSubject } else { 'Mail-DNS-Check Fehlerbericht' }
 
-  $summaryBlock = if ($SummaryTable -and $SummaryTable.Trim()) {
+  $encodedSummary = if ($SummaryTable) { [System.Net.WebUtility]::HtmlEncode($SummaryTable) } else { '' }
+  $encodedReport = [System.Net.WebUtility]::HtmlEncode($ReportJson)
+  $summaryBlock = if ($encodedSummary -and $encodedSummary.Trim()) {
 @"
-Zusammenfassung:
-$SummaryTable
-
+<h3 style="margin-bottom: 6px;">Zusammenfassung</h3>
+<pre style="background: #f7f7f7; padding: 12px; border-radius: 6px; font-family: Consolas, Monaco, 'Courier New', monospace;">$encodedSummary</pre>
 "@
   } else { '' }
 
   $body = @"
-Mail-DNS-Check: Fehler erkannt.
-Zeitpunkt (UTC): $((Get-Date).ToUniversalTime().ToString('o'))
-Domains: $($DomainReports.Count)
-Fehler: $failCount
-Warnungen: $warnCount
-
-$summaryBlock
-Report (JSON):
-$ReportJson
+<html>
+  <body style="font-family: Arial, sans-serif; color: #222;">
+    <p style="margin: 0 0 12px 0;">
+      <strong>Mail-DNS-Check: Fehler erkannt.</strong><br/>
+      Zeitpunkt (UTC): $((Get-Date).ToUniversalTime().ToString('o'))<br/>
+      Domains: $($DomainReports.Count)<br/>
+      Fehler: $failCount<br/>
+      Warnungen: $warnCount
+    </p>
+    $summaryBlock
+    <h3 style="margin-bottom: 6px;">Report (JSON)</h3>
+    <pre style="background: #f7f7f7; padding: 12px; border-radius: 6px; font-family: Consolas, Monaco, 'Courier New', monospace;">$encodedReport</pre>
+  </body>
+</html>
 "@
 
   $mailParams = @{
@@ -237,6 +243,7 @@ $ReportJson
     To         = ($SmtpTo -join ',')
     Subject    = $subjectValue
     Body       = $body
+    BodyAsHtml = $true
     ErrorAction= 'Stop'
   }
 
