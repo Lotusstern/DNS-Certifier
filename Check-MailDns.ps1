@@ -198,7 +198,6 @@ function Send-ErrorReport {
     [Parameter(Mandatory=$true)][string]$ReportJson,
     [Parameter(Mandatory=$true)][object[]]$DomainReports,
     [string]$ReportPath,
-    [string]$SummaryHtml,
     [string]$SummaryText
   )
 
@@ -212,17 +211,10 @@ function Send-ErrorReport {
   $subjectValue = if ($SmtpSubject -and $SmtpSubject.Trim()) { $SmtpSubject } else { 'Mail-DNS-Check Fehlerbericht' }
 
   $encodedReport = [System.Net.WebUtility]::HtmlEncode($ReportJson)
-  $summaryTextBlock = if ($SummaryText -and $SummaryText.Trim()) {
-@"
-<pre style="background: #f7f7f7; padding: 12px; border-radius: 6px; font-family: Consolas, Monaco, 'Courier New', monospace; white-space: pre; margin: 0 0 12px 0;">$SummaryText</pre>
-"@
-  } else { '' }
-
-  $summaryBlock = if (($SummaryHtml -and $SummaryHtml.Trim()) -or $summaryTextBlock) {
+  $summaryBlock = if ($SummaryText -and $SummaryText.Trim()) {
 @"
 <h3 style="margin-bottom: 6px;">Zusammenfassung</h3>
-$summaryTextBlock
-$SummaryHtml
+<pre style="background: #f7f7f7; padding: 12px; border-radius: 6px; font-family: Consolas, Monaco, 'Courier New', monospace; white-space: pre; margin: 0 0 12px 0;">$SummaryText</pre>
 "@
   } else { '' }
 
@@ -916,56 +908,6 @@ function Format-SummaryTextList {
   ($lines -join "`n").TrimEnd()
 }
 
-function Format-SummaryHtmlTable {
-  param([Parameter(Mandatory=$true)][object[]]$Rows)
-
-  if ($Rows.Count -eq 0) { return '' }
-
-  $columnDefs = @(
-    @{ Name = 'Domain'; Width = '42%'; Align = 'left'; Wrap = 'break-all' },
-    @{ Name = 'Status'; Width = '12%'; Align = 'left'; Wrap = 'normal' },
-    @{ Name = 'MX'; Width = '7%'; Align = 'center'; Wrap = 'nowrap' },
-    @{ Name = 'SPF'; Width = '7%'; Align = 'center'; Wrap = 'nowrap' },
-    @{ Name = 'DMARC'; Width = '9%'; Align = 'center'; Wrap = 'nowrap' },
-    @{ Name = 'DKIM'; Width = '7%'; Align = 'center'; Wrap = 'nowrap' },
-    @{ Name = 'SRV443'; Width = '8%'; Align = 'center'; Wrap = 'nowrap' }
-  )
-
-  $headerCells = $columnDefs |
-    ForEach-Object {
-      '<th width="{0}" align="{1}" style="border: 1px solid #ddd; padding: 6px 8px; text-align: {1}; background: #f2f2f2; font-weight: bold; font-family: Arial, sans-serif; font-size: 12px; line-height: 1.3;">{2}</th>' -f $_.Width, $_.Align, $_.Name
-    }
-  $header = '<tr>{0}</tr>' -f ($headerCells -join '')
-
-  $bodyRows = foreach ($row in $Rows) {
-    $values = @(
-      $row.Domain,
-      $row.Status,
-      $row.MX,
-      $row.SPF,
-      $row.DMARC,
-      $row.DKIM,
-      $row.SRV443
-    )
-    $cells = for ($i = 0; $i -lt $columnDefs.Count; $i++) {
-      $definition = $columnDefs[$i]
-      $value = [System.Net.WebUtility]::HtmlEncode([string]$values[$i])
-      $wrapStyle = if ($definition.Wrap -eq 'nowrap') { 'white-space: nowrap;' } elseif ($definition.Wrap -eq 'break-all') { 'word-break: break-all;' } else { '' }
-      '<td width="{0}" align="{1}" style="border: 1px solid #ddd; padding: 6px 8px; text-align: {1}; font-family: Arial, sans-serif; font-size: 12px; line-height: 1.3; {2}">{3}</td>' -f $definition.Width, $definition.Align, $wrapStyle, $value
-    }
-    '<tr>{0}</tr>' -f ($cells -join '')
-  }
-
-@"
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse: collapse; font-family: Arial, sans-serif; font-size: 12px; table-layout: fixed; mso-table-lspace: 0pt; mso-table-rspace: 0pt;">
-  <thead>$header</thead>
-  <tbody>
-    $($bodyRows -join "`n")
-  </tbody>
-</table>
-"@
-}
-
 # ============================================================================
 # SECTION 9 - Zusammenfassung und Ausgabe
 #   - Optional: Tabelle mit OK/WARN/FAIL anzeigen.
@@ -974,7 +916,6 @@ function Format-SummaryHtmlTable {
 # ============================================================================
 $summaryRows = @(Get-SummaryRows -DomainReports $domainReports -StrictMode:$Strict)
 $summaryTable = Format-SummaryTextList -Rows $summaryRows
-$summaryHtml = Format-SummaryHtmlTable -Rows $summaryRows
 
 if ($Summary) {
   Write-Host "`n=== Zusammenfassung ===`n" -ForegroundColor Cyan
@@ -1008,9 +949,10 @@ $hasFail = $domainReports | Where-Object { $_.status -like 'FAIL*' }
 $hasWarn = $domainReports | Where-Object { $_.status -like 'WARN*' }
 
 if ($hasFail) {
-  $summaryForMail = if ($Summary) { $summaryHtml } else { '' }
-  $summaryTextForMail = if ($Summary) { $summaryTable } else { '' }
-  Send-ErrorReport -ReportJson $reportJson -DomainReports $domainReports -ReportPath $OutputJson -SummaryHtml $summaryForMail -SummaryText $summaryTextForMail
+  $failedReports = $domainReports | Where-Object { $_.status -like 'FAIL*' }
+  $summaryRowsForMail = if ($Summary) { @(Get-SummaryRows -DomainReports $failedReports -StrictMode:$Strict) } else { @() }
+  $summaryForMail = if ($Summary) { Format-SummaryTextList -Rows $summaryRowsForMail } else { '' }
+  Send-ErrorReport -ReportJson $reportJson -DomainReports $domainReports -ReportPath $OutputJson -SummaryText $summaryForMail
   exit 2
 }
 elseif ($hasWarn) { exit 1 }
