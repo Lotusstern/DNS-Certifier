@@ -487,7 +487,7 @@ function Get-Zones {
   $unique
 }
 
-function Get-PrimaryZoneForFqdn {
+function Get-ZoneCandidatesForFqdn {
   param([Parameter(Mandatory=$true)][string]$Fqdn)
   $fq = $Fqdn.TrimEnd('.').ToLower()
 
@@ -505,18 +505,33 @@ function Get-PrimaryZoneForFqdn {
   foreach ($pattern in ($searchOrder | Select-Object -Unique)) {
     $zoneCandidates += @( Get-Zones -Search $pattern )
   }
-  if ($zoneCandidates.Count -eq 0) { return $null }
+  if ($zoneCandidates.Count -eq 0) { return @() }
 
-  $best = $null; $bestLen = -1
-  foreach ($z in $zoneCandidates) {
+  $matching = foreach ($z in $zoneCandidates) {
     $zn = $z.zone_name; if ($null -eq $zn) { $zn = '' }
     $zn = $zn.TrimEnd('.').ToLower()
-    if ($fq.EndsWith($zn) -and $zn.Length -gt $bestLen) {
-      $best    = $z
-      $bestLen = $zn.Length
+    if ($fq.EndsWith($zn)) {
+      [pscustomobject]@{ Zone = $z; Len = $zn.Length }
     }
   }
-  $best
+
+  $ordered = $matching | Sort-Object -Property Len -Descending
+  $unique = [System.Collections.Generic.List[object]]::new()
+  $seen   = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($entry in $ordered) {
+    $zone = $entry.Zone
+    $key = if ($zone.PSObject.Properties.Name -contains 'id' -and $zone.id) { "id:$($zone.id)" } else { "name:$($zone.zone_name)" }
+    if ($seen.Add($key)) { $unique.Add($zone) | Out-Null }
+  }
+
+  $unique.ToArray()
+}
+
+function Get-PrimaryZoneForFqdn {
+  param([Parameter(Mandatory=$true)][string]$Fqdn)
+  $candidates = @(Get-ZoneCandidatesForFqdn -Fqdn $Fqdn)
+  if ($candidates.Count -eq 0) { return $null }
+  $candidates | Select-Object -First 1
 }
 
 function Find-Records {
@@ -785,30 +800,42 @@ function Invoke-DomainAudit {
   $canonical = $Domain.Trim().TrimEnd('.')
   Write-Host ('Pruefe {0} ...' -f $canonical) -ForegroundColor Cyan
 
-  $zone = Get-PrimaryZoneForFqdn -Fqdn $canonical
-  $searchTerms = Get-RecordSearchTerms -Domain $canonical -Zone $zone
-  if ($VerboseZoneInfo) {
+  $zoneCandidates = @(Get-ZoneCandidatesForFqdn -Fqdn $canonical)
+  $zone = if ($zoneCandidates.Count -gt 0) { $zoneCandidates[0] } else { $null }
+
+  $attempt = 0
+  do {
+    $searchTerms = Get-RecordSearchTerms -Domain $canonical -Zone $zone
+    if ($VerboseZoneInfo) {
+      if ($zone) {
+        Write-Info ('Zone: {0} (#{1}) dnssec={2} status={3}' -f $zone.zone_name,$zone.id,$zone.dnssec,$zone.status)
+      } else {
+        Write-Warning 'Keine passende Zone gefunden.'
+      }
+    }
+
+    $zoneId = $null
     if ($zone) {
-      Write-Info ('Zone: {0} (#{1}) dnssec={2} status={3}' -f $zone.zone_name,$zone.id,$zone.dnssec,$zone.status)
+      if ($zone.PSObject.Properties.Name -contains 'id' -and $zone.id) {
+        $zoneId = [int]$zone.id
+      }
     } else {
-      Write-Warning 'Keine passende Zone gefunden.'
+      Write-Warning '[Fallback] Suche ohne zone_id - Ergebnisse koennen unvollstaendig sein.'
     }
-  }
 
-  $zoneId = $null
-  if ($zone) {
-    if ($zone.PSObject.Properties.Name -contains 'id' -and $zone.id) {
-      $zoneId = [int]$zone.id
-    }
-  } else {
-    Write-Warning '[Fallback] Suche ohne zone_id - Ergebnisse koennen unvollstaendig sein.'
-  }
+    $mx   = Test-MX     -Domain $canonical -ZoneId $zoneId -SearchTerms $searchTerms
+    $spf  = Test-SPF    -Domain $canonical -ZoneId $zoneId -SearchTerms $searchTerms
+    $dmarc= Test-DMARC  -Domain $canonical -ZoneId $zoneId -SearchTerms $searchTerms
+    $dkim = Test-DKIM   -Domain $canonical -DomainZoneId $zoneId -AltRoot $AltRootValue -SearchTerms $searchTerms
+    $srv  = Test-SRV443 -Domain $canonical -ZoneId $zoneId -SearchTerms $searchTerms
 
-  $mx   = Test-MX     -Domain $canonical -ZoneId $zoneId -SearchTerms $searchTerms
-  $spf  = Test-SPF    -Domain $canonical -ZoneId $zoneId -SearchTerms $searchTerms
-  $dmarc= Test-DMARC  -Domain $canonical -ZoneId $zoneId -SearchTerms $searchTerms
-  $dkim = Test-DKIM   -Domain $canonical -DomainZoneId $zoneId -AltRoot $AltRootValue -SearchTerms $searchTerms
-  $srv  = Test-SRV443 -Domain $canonical -ZoneId $zoneId -SearchTerms $searchTerms
+    $anyFound = (@($mx).Count -gt 0) -or $spf.present -or $dmarc.present -or $dkim.present -or $srv.present
+    $attempt++
+    if ($anyFound -or $attempt -ge $zoneCandidates.Count) { break }
+
+    $zone = $zoneCandidates[$attempt]
+    Write-Info ('Keine Records in Zone "{0}" gefunden. Versuche naechste Zone: "{1}".' -f $zoneCandidates[$attempt - 1].zone_name, $zone.zone_name)
+  } while ($true)
 
   $fail = @()
   $warn = @()
