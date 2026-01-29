@@ -197,7 +197,8 @@ function Send-ErrorReport {
   param(
     [Parameter(Mandatory=$true)][string]$ReportJson,
     [Parameter(Mandatory=$true)][object[]]$DomainReports,
-    [string]$ReportPath
+    [string]$ReportPath,
+    [string]$SummaryTable
   )
 
   if (-not $SmtpServer -or -not $SmtpFrom -or -not $SmtpTo -or $SmtpTo.Count -eq 0) {
@@ -209,6 +210,14 @@ function Send-ErrorReport {
   $warnCount = ($DomainReports | Where-Object { $_.status -like 'WARN*' }).Count
   $subjectValue = if ($SmtpSubject -and $SmtpSubject.Trim()) { $SmtpSubject } else { 'Mail-DNS-Check Fehlerbericht' }
 
+  $summaryBlock = if ($SummaryTable -and $SummaryTable.Trim()) {
+@"
+Zusammenfassung:
+$SummaryTable
+
+"@
+  } else { '' }
+
   $body = @"
 Mail-DNS-Check: Fehler erkannt.
 Zeitpunkt (UTC): $((Get-Date).ToUniversalTime().ToString('o'))
@@ -216,6 +225,7 @@ Domains: $($DomainReports.Count)
 Fehler: $failCount
 Warnungen: $warnCount
 
+$summaryBlock
 Report (JSON):
 $ReportJson
 "@
@@ -845,26 +855,28 @@ $domainReports = foreach ($domain in $domainInputs) {
 }
 
 # ============================================================================
-# SECTION 9 - Zusammenfassung und Ausgabe
-#   - Optional: Tabelle mit OK/WARN/FAIL anzeigen.
-#   - Immer: JSON-Report erzeugen und ausgeben.
-#   - Optional: JSON in Datei speichern.
+# SECTION 8B - Zusammenfassung (Funktionen)
+#   - Erzeugt Tabellenzeilen und formatiert sie als Text.
 # ============================================================================
-if ($Summary) {
-  Write-Host "`n=== Zusammenfassung ===`n" -ForegroundColor Cyan
-  $rows = foreach ($r in $domainReports) {
+function Get-SummaryRows {
+  param(
+    [Parameter(Mandatory=$true)][object[]]$DomainReports,
+    [switch]$StrictMode
+  )
+
+  foreach ($r in $DomainReports) {
     [pscustomobject]@{
       Domain = $r.domain
       Status = $r.status
       MX     = if ($r.checks.mx.present) { 'OK' } else { '--' }
       SPF    = if ($r.checks.spf.present) {
-                 if ($r.checks.spf.warnNoAll -and -not $Strict) { 'WARN' }
-                 elseif ($r.checks.spf.warnNoAll -and $Strict)  { 'FAIL' }
+                 if ($r.checks.spf.warnNoAll -and -not $StrictMode) { 'WARN' }
+                 elseif ($r.checks.spf.warnNoAll -and $StrictMode)  { 'FAIL' }
                  else { 'OK' }
                } else { '--' }
       DMARC  = if ($r.checks.dmarc.present) {
-                 if ($r.checks.dmarc.policyWarn -and -not $Strict) { 'WARN' }
-                 elseif ($r.checks.dmarc.policyWarn -and $Strict)  { 'FAIL' }
+                 if ($r.checks.dmarc.policyWarn -and -not $StrictMode) { 'WARN' }
+                 elseif ($r.checks.dmarc.policyWarn -and $StrictMode)  { 'FAIL' }
                  else { 'OK' }
                } else { '--' }
       DKIM   = if ($r.checks.dkim.present) { 'OK' } else { '--' }
@@ -873,7 +885,27 @@ if ($Summary) {
                } else { '--' }
     }
   }
-  $rows | Format-Table -AutoSize
+}
+
+function Format-SummaryTable {
+  param([Parameter(Mandatory=$true)][object[]]$Rows)
+
+  if ($Rows.Count -eq 0) { return '' }
+  ($Rows | Format-Table -AutoSize | Out-String).TrimEnd()
+}
+
+# ============================================================================
+# SECTION 9 - Zusammenfassung und Ausgabe
+#   - Optional: Tabelle mit OK/WARN/FAIL anzeigen.
+#   - Immer: JSON-Report erzeugen und ausgeben.
+#   - Optional: JSON in Datei speichern.
+# ============================================================================
+$summaryRows = @(Get-SummaryRows -DomainReports $domainReports -StrictMode:$Strict)
+$summaryTable = Format-SummaryTable -Rows $summaryRows
+
+if ($Summary) {
+  Write-Host "`n=== Zusammenfassung ===`n" -ForegroundColor Cyan
+  $summaryRows | Format-Table -AutoSize
   Write-Host ''
 }
 
@@ -903,7 +935,8 @@ $hasFail = $domainReports | Where-Object { $_.status -like 'FAIL*' }
 $hasWarn = $domainReports | Where-Object { $_.status -like 'WARN*' }
 
 if ($hasFail) {
-  Send-ErrorReport -ReportJson $reportJson -DomainReports $domainReports -ReportPath $OutputJson
+  $summaryForMail = if ($Summary) { $summaryTable } else { '' }
+  Send-ErrorReport -ReportJson $reportJson -DomainReports $domainReports -ReportPath $OutputJson -SummaryTable $summaryForMail
   exit 2
 }
 elseif ($hasWarn) { exit 1 }
