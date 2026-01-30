@@ -948,10 +948,10 @@ if ($OutputJson -and $OutputJson.Trim()) {
 $hasFail = $domainReports | Where-Object { $_.status -like 'FAIL*' }
 $hasWarn = $domainReports | Where-Object { $_.status -like 'WARN*' }
 
-if ($hasFail) {
+if ($hasFail -or $hasWarn) {
   $summaryForMail = $summaryTable
   Send-ErrorReport -ReportJson $reportJson -DomainReports $domainReports -ReportPath $OutputJson -SummaryText $summaryForMail
-  exit 2
+  if ($hasFail) { exit 2 }
+  exit 1
 }
-elseif ($hasWarn) { exit 1 }
 else { exit 0 }
