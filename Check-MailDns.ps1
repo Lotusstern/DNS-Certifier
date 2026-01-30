@@ -949,9 +949,7 @@ $hasFail = $domainReports | Where-Object { $_.status -like 'FAIL*' }
 $hasWarn = $domainReports | Where-Object { $_.status -like 'WARN*' }
 
 if ($hasFail) {
-  $failedReports = $domainReports | Where-Object { $_.status -like 'FAIL*' }
-  $summaryRowsForMail = if ($Summary) { @(Get-SummaryRows -DomainReports $failedReports -StrictMode:$Strict) } else { @() }
-  $summaryForMail = if ($Summary) { Format-SummaryTextList -Rows $summaryRowsForMail } else { '' }
+  $summaryForMail = $summaryTable
   Send-ErrorReport -ReportJson $reportJson -DomainReports $domainReports -ReportPath $OutputJson -SummaryText $summaryForMail
   exit 2
 }
