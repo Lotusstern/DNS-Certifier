@@ -205,12 +205,19 @@ function Send-ErrorReport {
     return
   }
 
-  $failCount = ($DomainReports | Where-Object { $_.status -like 'FAIL*' }).Count
-  $warnCount = ($DomainReports | Where-Object { $_.status -like 'WARN*' }).Count
+  $failDomains = @($DomainReports | Where-Object { $_.status -like 'FAIL*' })
+  $warnDomains = @($DomainReports | Where-Object { $_.status -like 'WARN*' })
+  $failCount = $failDomains.Count
+  $warnCount = $warnDomains.Count
+
+  if ($failCount -eq 0 -and $warnCount -eq 0) {
+    Write-Info 'SMTP-Fehlerbericht uebersprungen (keine WARN/FAIL-Domaenen).'
+    return
+  }
   $subjectValue = if ($SmtpSubject -and $SmtpSubject.Trim()) { $SmtpSubject } else { 'Mail-DNS-Check Fehlerbericht' }
-  $failedDomains = $DomainReports | Where-Object { $_.status -like 'FAIL*' } | Sort-Object -Property domain
-  $failedLines = if ($failedDomains.Count -gt 0) {
-    $failedDomains | ForEach-Object { ' - {0}: {1}' -f $_.domain, $_.status }
+  $affectedDomains = @($failDomains + $warnDomains | Sort-Object -Property domain)
+  $affectedLines = if ($affectedDomains.Count -gt 0) {
+    $affectedDomains | ForEach-Object { ' - {0}: {1}' -f $_.domain, $_.status }
   } else {
     ' - (keine)'
   }
@@ -222,8 +229,8 @@ Domains: $($DomainReports.Count)
 Fehler: $failCount
 Warnungen: $warnCount
 
-Fehlgeschlagene Domains:
-$($failedLines -join "`n")
+Betroffene Domains:
+$($affectedLines -join "`n")
 
 Report (JSON):
 $ReportJson
