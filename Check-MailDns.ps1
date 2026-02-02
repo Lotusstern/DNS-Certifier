@@ -904,16 +904,19 @@ if ($OutputJson -and $OutputJson.Trim()) {
 
 # ============================================================================
 # SECTION 10 - Exitcodes
-#   - Wenn irgendein FAIL -> exit 2
+#   - Report immer per Mail versenden (sofern SMTP konfiguriert).
+#   - FAILs sollen die Pipeline nicht abbrechen -> exit 0.
 #   - Wenn nur WARN -> exit 1
 #   - Sonst -> exit 0
 # ============================================================================
 $hasFail = $domainReports | Where-Object { $_.status -like 'FAIL*' }
 $hasWarn = $domainReports | Where-Object { $_.status -like 'WARN*' }
 
+Send-ErrorReport -ReportJson $reportJson -DomainReports $domainReports -ReportPath $OutputJson
+
 if ($hasFail) {
-  Send-ErrorReport -ReportJson $reportJson -DomainReports $domainReports -ReportPath $OutputJson
-  exit 2
+  Write-Warning 'Es gibt fehlgeschlagene Domains. Exitcode bleibt 0, damit die Pipeline nicht fehlschlaegt.'
+  exit 0
 }
 elseif ($hasWarn) { exit 1 }
 else { exit 0 }
