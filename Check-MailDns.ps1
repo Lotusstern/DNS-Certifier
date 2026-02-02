@@ -208,6 +208,12 @@ function Send-ErrorReport {
   $failCount = ($DomainReports | Where-Object { $_.status -like 'FAIL*' }).Count
   $warnCount = ($DomainReports | Where-Object { $_.status -like 'WARN*' }).Count
   $subjectValue = if ($SmtpSubject -and $SmtpSubject.Trim()) { $SmtpSubject } else { 'Mail-DNS-Check Fehlerbericht' }
+  $failedDomains = $DomainReports | Where-Object { $_.status -like 'FAIL*' } | Sort-Object -Property domain
+  $failedLines = if ($failedDomains.Count -gt 0) {
+    $failedDomains | ForEach-Object { ' - {0}: {1}' -f $_.domain, $_.status }
+  } else {
+    ' - (keine)'
+  }
 
   $body = @"
 Mail-DNS-Check: Fehler erkannt.
@@ -215,6 +221,9 @@ Zeitpunkt (UTC): $((Get-Date).ToUniversalTime().ToString('o'))
 Domains: $($DomainReports.Count)
 Fehler: $failCount
 Warnungen: $warnCount
+
+Fehlgeschlagene Domains:
+$($failedLines -join "`n")
 
 Report (JSON):
 $ReportJson
