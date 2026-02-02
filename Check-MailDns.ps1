@@ -65,12 +65,12 @@ param(
   [switch]$Strict,
   [switch]$Summary,
   [Alias('Verbose')][switch]$VerboseOutput,
-  [string]$SmtpServer,
+  [string]$SmtpServer = $env:SmtpServer,
   [int]$SmtpPort = 25,
-  [string]$SmtpFrom,
-  [string[]]$SmtpTo,
-  [string]$SmtpUser,
-  [string]$SmtpPassword,
+  [string]$SmtpFrom = $env:SmtpFrom,
+  [string[]]$SmtpTo = $(if ($env:SmtpTo) { @($env:SmtpTo) } else { @() }),
+  [string]$SmtpUser = $env:SmtpUser,
+  [string]$SmtpPassword = $env:SmtpPassword,
   [switch]$SmtpUseSsl,
   [string]$SmtpSubject = 'Mail-DNS-Check Fehlerbericht'
 )
@@ -204,6 +204,7 @@ function Send-ErrorReport {
   $smtpFromValue = if ($SmtpFrom) { $SmtpFrom.Trim() } else { $null }
   $smtpToValue = @(
     $SmtpTo |
+      ForEach-Object { if ($_) { $_ -split '[,;]' } } |
       ForEach-Object { if ($_) { $_.Trim() } } |
       Where-Object { $_ }
   )
