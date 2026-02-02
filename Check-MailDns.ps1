@@ -200,8 +200,16 @@ function Send-ErrorReport {
     [string]$ReportPath
   )
 
-  if (-not $SmtpServer -or -not $SmtpFrom -or -not $SmtpTo -or $SmtpTo.Count -eq 0) {
-    Write-Info 'SMTP-Fehlerbericht uebersprungen (SmtpServer/SmtpFrom/SmtpTo fehlen).'
+  $smtpServerValue = if ($SmtpServer) { $SmtpServer.Trim() } else { $null }
+  $smtpFromValue = if ($SmtpFrom) { $SmtpFrom.Trim() } else { $null }
+  $smtpToValue = @(
+    $SmtpTo |
+      ForEach-Object { if ($_) { $_.Trim() } } |
+      Where-Object { $_ }
+  )
+
+  if (-not $smtpServerValue -or -not $smtpFromValue -or $smtpToValue.Count -eq 0) {
+    Write-Warning 'SMTP-Fehlerbericht uebersprungen (SmtpServer/SmtpFrom/SmtpTo fehlen).'
     return
   }
 
@@ -237,10 +245,10 @@ $ReportJson
 "@
 
   $mailParams = @{
-    SmtpServer = $SmtpServer
+    SmtpServer = $smtpServerValue
     Port       = $SmtpPort
-    From       = $SmtpFrom
-    To         = ($SmtpTo -join ',')
+    From       = $smtpFromValue
+    To         = ($smtpToValue -join ',')
     Subject    = $subjectValue
     Body       = $body
     ErrorAction= 'Stop'
