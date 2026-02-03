@@ -225,10 +225,16 @@ function Send-ErrorReport {
   }
   $subjectValue = if ($SmtpSubject -and $SmtpSubject.Trim()) { $SmtpSubject } else { 'Mail-DNS-Check Fehlerbericht' }
   $affectedDomains = @($failDomains + $warnDomains | Sort-Object -Property domain)
+  $maxAffectedLines = 200
   $affectedLines = if ($affectedDomains.Count -gt 0) {
-    $affectedDomains | ForEach-Object { ' - {0}: {1}' -f $_.domain, $_.status }
+    $affectedDomains |
+      Select-Object -First $maxAffectedLines |
+      ForEach-Object { ' - {0}: {1}' -f $_.domain, $_.status }
   } else {
     ' - (keine)'
+  }
+  if ($affectedDomains.Count -gt $maxAffectedLines) {
+    $affectedLines += ' - ... und {0} weitere (siehe JSON-Report)' -f ($affectedDomains.Count - $maxAffectedLines)
   }
 
   $attachmentNote = if ($ReportPath -and (Test-Path -LiteralPath $ReportPath)) {
@@ -249,6 +255,20 @@ $($affectedLines -join "`n")
 
 $attachmentNote
 "@
+  $attachments = @()
+  if ($ReportPath -and (Test-Path -LiteralPath $ReportPath)) {
+    $attachments += $ReportPath
+  }
+  if ($body.Length -gt 10000) {
+    $tempReportPath = [System.IO.Path]::GetTempFileName() + '.txt'
+    try {
+      Set-Content -LiteralPath $tempReportPath -Value $body -Encoding UTF8
+      $attachments += $tempReportPath
+      $body = "Mail-DNS-Check: Fehler erkannt.`nDer Fehlerbericht ist wegen der Laenge als TXT-Anhang beigefuegt."
+    } catch {
+      $body = $body.Substring(0, 10000) + "`n`n(Bericht gekuerzt, siehe JSON-Anhang.)"
+    }
+  }
 
   $mailParams = @{
     SmtpServer = $smtpServerValue
@@ -269,8 +289,8 @@ $attachmentNote
     $mailParams.Credential = [pscredential]::new($SmtpUser, $securePassword)
   }
 
-  if ($ReportPath -and (Test-Path -LiteralPath $ReportPath)) {
-    $mailParams.Attachments = $ReportPath
+  if ($attachments.Count -gt 0) {
+    $mailParams.Attachments = $attachments
   }
 
   try {
