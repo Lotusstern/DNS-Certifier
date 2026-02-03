@@ -231,6 +231,12 @@ function Send-ErrorReport {
     ' - (keine)'
   }
 
+  $attachmentNote = if ($ReportPath -and (Test-Path -LiteralPath $ReportPath)) {
+    'JSON-Report ist als Anhang beigefuegt.'
+  } else {
+    'JSON-Report konnte nicht als Anhang beigefuegt werden.'
+  }
+
   $body = @"
 Mail-DNS-Check: Fehler erkannt.
 Zeitpunkt (UTC): $((Get-Date).ToUniversalTime().ToString('o'))
@@ -241,8 +247,7 @@ Warnungen: $warnCount
 Betroffene Domains:
 $($affectedLines -join "`n")
 
-Report (JSON):
-$ReportJson
+$attachmentNote
 "@
 
   $mailParams = @{
