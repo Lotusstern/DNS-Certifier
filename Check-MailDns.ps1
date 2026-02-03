@@ -243,7 +243,7 @@ function Send-ErrorReport {
     'TXT-Fehlerbericht ist als Anhang beigefuegt. JSON-Report konnte nicht beigefuegt werden.'
   }
 
-  $body = @"
+  $detailBody = @"
 Mail-DNS-Check: Fehler erkannt.
 Zeitpunkt (UTC): $((Get-Date).ToUniversalTime().ToString('o'))
 Domains: $($DomainReports.Count)
@@ -255,22 +255,25 @@ $($affectedLines -join "`n")
 
 $attachmentNote
 "@
+  $body = @"
+Mail-DNS-Check: Fehler erkannt.
+Zeitpunkt (UTC): $((Get-Date).ToUniversalTime().ToString('o'))
+Domains: $($DomainReports.Count)
+Fehler: $failCount
+Warnungen: $warnCount
+
+Der SMTP-Fehlerbericht ist als TXT-Anhang beigefuegt.
+"@
   $attachments = @()
   if ($ReportPath -and (Test-Path -LiteralPath $ReportPath)) {
     $attachments += $ReportPath
   }
   $tempReportPath = [System.IO.Path]::GetTempFileName() + '.txt'
-  $reportText = $body
+  $reportText = $detailBody
   try {
     Set-Content -LiteralPath $tempReportPath -Value $reportText -Encoding UTF8
     $attachments += $tempReportPath
-    if ($body.Length -gt 10000) {
-      $body = "Mail-DNS-Check: Fehler erkannt.`nDer Fehlerbericht ist wegen der Laenge als TXT-Anhang beigefuegt."
-    }
   } catch {
-    if ($body.Length -gt 10000) {
-      $body = $body.Substring(0, 10000) + "`n`n(Bericht gekuerzt, siehe JSON-Anhang.)"
-    }
     Write-Warning ('TXT-Fehlerbericht konnte nicht erstellt werden: {0}' -f $_.Exception.Message)
   }
 
