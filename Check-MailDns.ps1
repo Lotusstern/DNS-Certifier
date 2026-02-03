@@ -268,7 +268,11 @@ Der SMTP-Fehlerbericht ist als TXT-Anhang beigefuegt.
   if ($ReportPath -and (Test-Path -LiteralPath $ReportPath)) {
     $attachments += $ReportPath
   }
-  $tempReportPath = [System.IO.Path]::GetTempFileName() + '.txt'
+  $reportTimestamp = (Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')
+  $tempReportPath = Join-Path ([System.IO.Path]::GetTempPath()) ("smtp-fehlerbericht-{0}.txt" -f $reportTimestamp)
+  if (Test-Path -LiteralPath $tempReportPath) {
+    $tempReportPath = Join-Path ([System.IO.Path]::GetTempPath()) ("smtp-fehlerbericht-{0}-{1}.txt" -f $reportTimestamp, ([System.Guid]::NewGuid().ToString('N')))
+  }
   $reportText = $detailBody
   try {
     Set-Content -LiteralPath $tempReportPath -Value $reportText -Encoding UTF8
