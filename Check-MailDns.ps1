@@ -31,7 +31,6 @@
        VerboseZones = Zusatzinfos zur Zone anzeigen
        DebugHttp    = jede HTTP-Anfrage sichtbar machen
        VerboseOutput= ausfuehrliche Fortschrittsmeldungen
-       Strict       = SPF ohne "-all" und DMARC "p=none" als Fehler werten
        Summary      = vor JSON eine Tabelle anzeigen
        SmtpServer   = SMTP-Server fuer Fehlerberichte
        SmtpPort     = SMTP-Port (Standard 25)
@@ -62,7 +61,6 @@ param(
   [switch]$IncludeDrafts,
   [switch]$VerboseZones,
   [switch]$DebugHttp,
-  [switch]$Strict,
   [switch]$Summary,
   [Alias('Verbose')][switch]$VerboseOutput,
   [string]$SmtpServer = $env:SmtpServer,
@@ -816,7 +814,6 @@ function Invoke-DomainAudit {
   param(
     [Parameter(Mandatory=$true)][string]$Domain,
     [Parameter(Mandatory=$true)][string]$AltRootValue,
-    [switch]$StrictMode,
     [switch]$VerboseZoneInfo
   )
 
@@ -856,11 +853,6 @@ function Invoke-DomainAudit {
   if (-not $dkim.present) { $fail += 'dkim' }
   if (-not $srv.present)  { $fail += 'srv' } elseif ($srv.wrongPort) { $fail += 'srv:port!=443' }
 
-  if ($StrictMode) {
-    if ($warn -contains 'spf:no -all')  { $fail += 'spf:no -all';  $warn = $warn | Where-Object { $_ -ne 'spf:no -all' } }
-    if ($warn -contains 'dmarc:p=none') { $fail += 'dmarc:p=none'; $warn = $warn | Where-Object { $_ -ne 'dmarc:p=none' } }
-  }
-
   $status = 'OK'
   if     ($fail.Count -gt 0) { $status = 'FAIL: ' + ($fail -join ', ') }
   elseif ($warn.Count -gt 0) { $status = 'WARN: ' + ($warn -join ', ') }
@@ -895,7 +887,7 @@ function Invoke-DomainAudit {
 Write-Info ('Starte Checks fuer {0} Domains.' -f $domainInputs.Count)
 
 $domainReports = foreach ($domain in $domainInputs) {
-  Invoke-DomainAudit -Domain $domain -AltRootValue $AltRoot -StrictMode:$Strict -VerboseZoneInfo:$VerboseZones
+  Invoke-DomainAudit -Domain $domain -AltRootValue $AltRoot -VerboseZoneInfo:$VerboseZones
 }
 
 # ============================================================================
@@ -912,14 +904,10 @@ if ($Summary) {
       Status = $r.status
       MX     = if ($r.checks.mx.present) { 'OK' } else { '--' }
       SPF    = if ($r.checks.spf.present) {
-                 if ($r.checks.spf.warnNoAll -and -not $Strict) { 'WARN' }
-                 elseif ($r.checks.spf.warnNoAll -and $Strict)  { 'FAIL' }
-                 else { 'OK' }
+                 if ($r.checks.spf.warnNoAll) { 'WARN' } else { 'OK' }
                } else { '--' }
       DMARC  = if ($r.checks.dmarc.present) {
-                 if ($r.checks.dmarc.policyWarn -and -not $Strict) { 'WARN' }
-                 elseif ($r.checks.dmarc.policyWarn -and $Strict)  { 'FAIL' }
-                 else { 'OK' }
+                 if ($r.checks.dmarc.policyWarn) { 'WARN' } else { 'OK' }
                } else { '--' }
       DKIM   = if ($r.checks.dkim.present) { 'OK' } else { '--' }
       SRV443 = if ($r.checks.srv443.present) {
