@@ -173,19 +173,22 @@ function Import-FallbackDomains {
 
 # ============================================================================
 # SECTION 2 - Logging-Helfer
-#   - Write-DebugHttp zeigt HTTP-Aufrufe in Farbe (nur bei Debug/Verbose).
-#   - Write-Info zeigt allgemeine Infos nur im Verbose-Modus.
+#   - Write-Log zeigt HTTP-Aufrufe in Farbe (nur bei Debug/Verbose).
+#   - Info-Meldungen erscheinen nur im Verbose-Modus.
 # ============================================================================
-function Write-DebugHttp {
-  param([string]$Message)
-  if ($DebugHttp) {
-    Write-Host $Message -ForegroundColor DarkYellow
-  } elseif ($ShowVerbose) {
-    Write-Host $Message -ForegroundColor DarkGray
+function Write-Log {
+  param(
+    [string]$Message,
+    [switch]$IsHttp
+  )
+
+  if ($IsHttp) {
+    if ($DebugHttp) {
+      Write-Host $Message -ForegroundColor DarkYellow
+      return
+    }
   }
-}
-function Write-Info {
-  param([string]$Message)
+
   if ($ShowVerbose) {
     Write-Host $Message -ForegroundColor DarkGray
   }
@@ -217,7 +220,7 @@ function Send-ErrorReport {
   $warnCount = $warnDomains.Count
 
   if ($failCount -eq 0 -and $warnCount -eq 0) {
-    Write-Info 'SMTP-Fehlerbericht uebersprungen (keine WARN/FAIL-Domaenen).'
+    Write-Log 'SMTP-Fehlerbericht uebersprungen (keine WARN/FAIL-Domaenen).'
     return
   }
   $subjectValue = if ($SmtpSubject -and $SmtpSubject.Trim()) { $SmtpSubject } else { 'Mail-DNS-Check Fehlerbericht' }
@@ -293,7 +296,7 @@ $attachmentNote
 
   try {
     Send-MailMessage @mailParams
-    Write-Info 'Fehlerbericht per SMTP versendet.'
+    Write-Log 'Fehlerbericht per SMTP versendet.'
   } catch {
     Write-Warning ('SMTP-Fehlerbericht konnte nicht gesendet werden: {0}' -f $_.Exception.Message)
   }
@@ -316,7 +319,7 @@ function Invoke-ApiGet {
   $uri = "$ApiBase/$Path"
   switch ($Mode) {
     'Body' {
-      Write-DebugHttp "[HTTP] GET $uri  (Body)"
+      Write-Log "[HTTP] GET $uri  (Body)" -IsHttp
       return Invoke-RestMethod -Method GET -Uri $uri -Headers $Headers -Body $Form -ErrorAction Stop
     }
     'QueryString' {
@@ -330,7 +333,7 @@ function Invoke-ApiGet {
         $qs = ($pairs -join '&')
       }
       $uriQS = if ($qs) { "$uri`?$qs" } else { $uri }
-      Write-DebugHttp "[HTTP] GET $uriQS  (QS)"
+      Write-Log "[HTTP] GET $uriQS  (QS)" -IsHttp
       return Invoke-RestMethod -Method GET -Uri $uriQS -Headers $Headers -ErrorAction Stop
     }
   }
@@ -364,7 +367,7 @@ function Invoke-ApiGetAll {
 function Test-ApiConnectivity {
   try {
     $info = Invoke-ApiGet -Path 'get_api_token_info' -Form $null
-    Write-Info ('[API] Token OK: {0}' -f $info.name)
+    Write-Log ('[API] Token OK: {0}' -f $info.name)
   } catch {
     throw ('API-Check fehlgeschlagen. Pruefe -ApiBase ({0}) und Token. Fehler: {1}' -f $ApiBase, $_.Exception.Message)
   }
@@ -795,7 +798,7 @@ function Resolve-DomainList {
         Write-Warning ('DomainSearch "{0}" lieferte keine Treffer.' -f $pClean)
         continue
       }
-      Write-Info ('DomainSearch "{0}" -> {1} Treffer' -f $pClean, $zones.Count)
+      Write-Log ('DomainSearch "{0}" -> {1} Treffer' -f $pClean, $zones.Count)
       foreach ($z in $zones) {
         $nameProp = if ($z.PSObject.Properties.Name -contains 'zone_name') { $z.zone_name } else { $null }
         if ([string]::IsNullOrWhiteSpace($nameProp)) { continue }
@@ -822,7 +825,7 @@ function Invoke-DomainAudit {
   $searchTerms = Get-RecordSearchTerms -Domain $canonical -Zone $zone
   if ($VerboseZoneInfo) {
     if ($zone) {
-      Write-Info ('Zone: {0} (#{1}) dnssec={2} status={3}' -f $zone.zone_name,$zone.id,$zone.dnssec,$zone.status)
+      Write-Log ('Zone: {0} (#{1}) dnssec={2} status={3}' -f $zone.zone_name,$zone.id,$zone.dnssec,$zone.status)
     } else {
       Write-Warning 'Keine passende Zone gefunden.'
     }
@@ -882,7 +885,7 @@ function Invoke-DomainAudit {
     throw 'Keine Domains gefunden. Uebergib -Domains oder -DomainSearch.'
   }
 
-Write-Info ('Starte Checks fuer {0} Domains.' -f $domainInputs.Count)
+Write-Log ('Starte Checks fuer {0} Domains.' -f $domainInputs.Count)
 
 $domainReports = foreach ($domain in $domainInputs) {
   Invoke-DomainAudit -Domain $domain -AltRootValue $AltRoot -VerboseZoneInfo:$VerboseZones
@@ -930,7 +933,7 @@ if ($OutputJson -and $OutputJson.Trim()) {
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
   }
   Set-Content -Path $OutputJson -Value $reportJson -Encoding UTF8
-  Write-Info ('Report gespeichert unter {0}' -f $OutputJson)
+  Write-Log ('Report gespeichert unter {0}' -f $OutputJson)
 }
 
 # ============================================================================
