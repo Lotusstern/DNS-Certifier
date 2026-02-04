@@ -255,7 +255,6 @@ Domains: $($DomainReports.Count)
 Fehler: $failCount
 Warnungen: $warnCount
 
-Der SMTP-Fehlerbericht ist als TXT-Anhang beigefuegt.
 $attachmentNote
 "@
   $attachments = @()
