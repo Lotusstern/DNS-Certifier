@@ -31,17 +31,10 @@ stages: [test]
         New-Item -ItemType Directory -Path 'reports' -Force | Out-Null
       }
 
-maildns:report:
+maildns:
   extends: .maildns-base
   script:
     - *maildns_script
     - .\Check-MailDns.ps1 -ApiBase $env:API_BASE -Domains $domains -Summary -OutputJson 'reports\maildns.json'
   allow_failure:
     exit_codes: [1]     # <- WARN (1) ist erlaubt, FAIL (2) bleibt rot
-
-maildns:strict:
-  extends: .maildns-base
-  script:
-    - *maildns_script
-    - .\Check-MailDns.ps1 -ApiBase $env:API_BASE -Domains $domains -Strict -Summary -OutputJson 'reports\maildns.json'
-  when: manual
