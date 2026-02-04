@@ -46,7 +46,7 @@
 71-76  Hinweise:
        - PowerShell 5.1 und 7+ werden unterstuetzt.
        - UTF-8-Speicherung empfohlen.
-       - Exitcodes: 0=OK, 1=Warnung, 2=Fehler.
+       - Exitcodes: 0=OK, 1=Warnung/Fehler.
        - Ohne Domains werden automatisch Dateien gesucht.
 #>
 
@@ -939,8 +939,7 @@ if ($OutputJson -and $OutputJson.Trim()) {
 # ============================================================================
 # SECTION 10 - Exitcodes
 #   - Report immer per Mail versenden (sofern SMTP konfiguriert).
-#   - FAILs sollen die Pipeline nicht abbrechen -> exit 0.
-#   - Wenn nur WARN -> exit 1
+#   - WARN und FAIL -> exit 1 (Bericht wird versendet).
 #   - Sonst -> exit 0
 # ============================================================================
 $hasFail = $domainReports | Where-Object { $_.status -like 'FAIL*' }
@@ -948,9 +947,8 @@ $hasWarn = $domainReports | Where-Object { $_.status -like 'WARN*' }
 
 Send-ErrorReport -DomainReports $domainReports -ReportPath $OutputJson
 
-if ($hasFail) {
-  Write-Warning 'Es gibt fehlgeschlagene Domains. Exitcode bleibt 0, damit die Pipeline nicht fehlschlaegt.'
-  exit 0
+if ($hasFail -or $hasWarn) {
+  exit 1
 }
-elseif ($hasWarn) { exit 1 }
-else { exit 0 }
+
+exit 0
