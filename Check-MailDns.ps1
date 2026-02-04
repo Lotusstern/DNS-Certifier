@@ -193,7 +193,6 @@ function Write-Info {
 
 function Send-ErrorReport {
   param(
-    [Parameter(Mandatory=$true)][string]$ReportJson,
     [Parameter(Mandatory=$true)][object[]]$DomainReports,
     [string]$ReportPath
   )
@@ -236,23 +235,20 @@ function Send-ErrorReport {
     'TXT-Fehlerbericht ist als Anhang beigefuegt. JSON-Report konnte nicht beigefuegt werden.'
   }
 
-$detailBody = @"
+  $reportHeader = @"
 Mail-DNS-Check: Fehler erkannt.
 Zeitpunkt (UTC): $((Get-Date).ToUniversalTime().ToString('o'))
 Domains: $($DomainReports.Count)
 Fehler: $failCount
 Warnungen: $warnCount
-
+"@
+  $detailBody = @"
+$reportHeader
 Betroffene Domains:
 $($affectedLines -join "`n")
 "@
-$body = @"
-Mail-DNS-Check: Fehler erkannt.
-Zeitpunkt (UTC): $((Get-Date).ToUniversalTime().ToString('o'))
-Domains: $($DomainReports.Count)
-Fehler: $failCount
-Warnungen: $warnCount
-
+  $body = @"
+$reportHeader
 $attachmentNote
 "@
   $attachments = @()
@@ -708,6 +704,14 @@ function Test-DKIM {
   param([string]$Domain,[Nullable[int]]$DomainZoneId,[string]$AltRoot,[string[]]$SearchTerms)
 
   $rawHits = [System.Collections.Generic.List[string]]::new()
+  $isDkimRecordLine = {
+    param([string]$Line)
+    if (-not $Line) { return $false }
+    if ($Line -notmatch '_domainkey') { return $false }
+    if ($Line -match '\sIN\sCNAME\s') { return $true }
+    if ($Line -match '\sIN\sTXT\s' -and ( ($Line -match '(?i)v=DKIM1') -or ($Line -match '\bp=') )) { return $true }
+    $false
+  }
 
   $dkimSearch = @()
   $dkimSearch += ($SearchTerms | ForEach-Object { "_domainkey.$_" })
@@ -716,10 +720,7 @@ function Test-DKIM {
   if ($dkimSearch.Count -gt 0) {
     foreach ($r in (Find-Records -Search $dkimSearch -ZoneId $DomainZoneId)) {
       $line = Remove-Comment $r.content
-      if (-not $line) { continue }
-      $isTxt   = ($line -match '_domainkey') -and ($line -match '\sIN\sTXT\s') -and ( ($line -match '(?i)v=DKIM1') -or ($line -match '\bp=') )
-      $isCname = ($line -match '_domainkey') -and ($line -match '\sIN\sCNAME\s')
-      if ($isTxt -or $isCname) { $rawHits.Add($line) | Out-Null }
+      if (& $isDkimRecordLine $line) { $rawHits.Add($line) | Out-Null }
     }
   }
 
@@ -735,10 +736,7 @@ function Test-DKIM {
     }
     foreach ($r in (Find-Records -Search @("_domainkey.$AltRoot") -ZoneId $altZoneId)) {
       $line = Remove-Comment $r.content
-      if (-not $line) { continue }
-      $isTxt   = ($line -match '_domainkey') -and ($line -match '\sIN\sTXT\s') -and ( ($line -match '(?i)v=DKIM1') -or ($line -match '\bp=') )
-      $isCname = ($line -match '_domainkey') -and ($line -match '\sIN\sCNAME\s')
-      if ($isTxt -or $isCname) { $rawHits.Add($line) | Out-Null }
+      if (& $isDkimRecordLine $line) { $rawHits.Add($line) | Out-Null }
     }
   }
 
@@ -945,7 +943,7 @@ if ($OutputJson -and $OutputJson.Trim()) {
 $hasFail = $domainReports | Where-Object { $_.status -like 'FAIL*' }
 $hasWarn = $domainReports | Where-Object { $_.status -like 'WARN*' }
 
-Send-ErrorReport -ReportJson $reportJson -DomainReports $domainReports -ReportPath $OutputJson
+Send-ErrorReport -DomainReports $domainReports -ReportPath $OutputJson
 
 if ($hasFail) {
   Write-Warning 'Es gibt fehlgeschlagene Domains. Exitcode bleibt 0, damit die Pipeline nicht fehlschlaegt.'
