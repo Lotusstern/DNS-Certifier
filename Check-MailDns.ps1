@@ -225,16 +225,11 @@ function Send-ErrorReport {
   }
   $subjectValue = if ($SmtpSubject -and $SmtpSubject.Trim()) { $SmtpSubject } else { 'Mail-DNS-Check Fehlerbericht' }
   $affectedDomains = @($failDomains + $warnDomains | Sort-Object -Property domain)
-  $maxAffectedLines = 200
   $affectedLines = if ($affectedDomains.Count -gt 0) {
     $affectedDomains |
-      Select-Object -First $maxAffectedLines |
       ForEach-Object { ' - {0}: {1}' -f $_.domain, $_.status }
   } else {
     ' - (keine)'
-  }
-  if ($affectedDomains.Count -gt $maxAffectedLines) {
-    $affectedLines += ' - ... und {0} weitere (siehe JSON-Report)' -f ($affectedDomains.Count - $maxAffectedLines)
   }
 
   $attachmentNote = if ($ReportPath -and (Test-Path -LiteralPath $ReportPath)) {
