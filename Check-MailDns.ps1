@@ -1,53 +1,80 @@
 <#
+.SYNOPSIS
+Prueft Mail-DNS-Eintraege (MX, SPF, DMARC, DKIM, Autodiscover) fuer Domains.
 
+.DESCRIPTION
+Dieses Skript ruft eine DNS-API auf, prueft die wichtigsten Mail-Records und
+gibt die Ergebnisse als JSON aus. Optional kann vorab eine Tabelle angezeigt
+werden und bei WARN/FAIL ein SMTP-Fehlerbericht versendet werden.
 
-01-03  Was macht das Skript?
-       Es prueft Mail-DNS-Eintraege (MX, SPF, DMARC, DKIM, Autodiscover) fuer Domains.
+.PARAMETER ApiBase
+Basis-URL der DNS-API (ohne Slash am Ende).
 
-04-10  Grober Ablauf:
-       (1) Parameter und API pruefen
-       (2) Domainliste sammeln (manuell oder per Suche)
-       (3) DNS-Records abrufen
-       (4) Ergebnisse ausgeben (JSON, optional Tabelle)
+.PARAMETER ApiToken
+Basic-Auth-Token (oder Umgebungsvariable DNS_API_TOKEN).
 
-11-18  Wofuer stehen die Checks?
-       MX     = Mail-Routing
-       SPF    = Wer darf Mails senden?
-       DMARC  = Policy (none/quarantine/reject)
-       DKIM   = Signaturschluessel oder Delegation
-       SRV443 = Outlook-Autodiscover auf Port 443
+.PARAMETER Domains
+Liste der zu pruefenden Domains.
 
-19-23  Diese Datei enthaelt viele Hilfsfunktionen, damit die API-Abfragen stabil sind
-       (Fallbacks, Caches, Debug-Ausgaben).
+.PARAMETER DomainSearch
+Suchmuster fuer list_zones (Wildcards moeglich).
 
-24-58  Parameter (Eingaben) kurz erklaert:
-       ApiBase      = Basis-URL der DNS-API (ohne Slash am Ende)
-       ApiToken     = Basic-Auth-Token (oder Umgebungsvariable DNS_API_TOKEN)
-       Domains      = Liste der zu pruefenden Domains
-       DomainSearch = Suchmuster fuer list_zones (Wildcards moeglich)
-       OutputJson   = Pfad, wohin der JSON-Report geschrieben wird
-       AltRoot      = Alternative Root fuer DKIM-Delegation
-       IncludeDrafts= auch Records mit Status "draft" einbeziehen
-       VerboseZones = Zusatzinfos zur Zone anzeigen
-       DebugHttp    = jede HTTP-Anfrage sichtbar machen
-       VerboseOutput= ausfuehrliche Fortschrittsmeldungen
-       Summary      = vor JSON eine Tabelle anzeigen
-       SmtpServer   = SMTP-Server fuer Fehlerberichte
-       SmtpPort     = SMTP-Port (Standard 25)
-       SmtpFrom     = Absenderadresse fuer Fehlerberichte
-       SmtpTo       = Empfaengeradresse(n) fuer Fehlerberichte
-       SmtpUser     = optionaler SMTP-Benutzer
-       SmtpPassword = optionales SMTP-Passwort
-       SmtpUseSsl   = SMTP mit SSL/TLS verwenden
-       SmtpSubject  = Betreff fuer Fehlerberichte
+.PARAMETER OutputJson
+Pfad, wohin der JSON-Report geschrieben wird.
 
-60-70  Beispiele: zeigen, wie man das Skript aufruft.
+.PARAMETER AltRoot
+Alternative Root fuer DKIM-Delegation.
 
-71-76  Hinweise:
-       - PowerShell 5.1 und 7+ werden unterstuetzt.
-       - UTF-8-Speicherung empfohlen.
-       - Exitcodes: 0=OK, 1=Warnung/Fehler.
-       - Ohne Domains werden automatisch Dateien gesucht.
+.PARAMETER IncludeDrafts
+Auch Records mit Status "draft" einbeziehen.
+
+.PARAMETER VerboseZones
+Zusatzinfos zur Zone anzeigen.
+
+.PARAMETER DebugHttp
+Jede HTTP-Anfrage sichtbar machen.
+
+.PARAMETER Summary
+Vor JSON eine Tabelle anzeigen.
+
+.PARAMETER VerboseOutput
+Ausfuehrliche Fortschrittsmeldungen.
+
+.PARAMETER SmtpServer
+SMTP-Server fuer Fehlerberichte.
+
+.PARAMETER SmtpPort
+SMTP-Port (Standard 25).
+
+.PARAMETER SmtpFrom
+Absenderadresse fuer Fehlerberichte.
+
+.PARAMETER SmtpTo
+Empfaengeradresse(n) fuer Fehlerberichte.
+
+.PARAMETER SmtpUser
+Optionaler SMTP-Benutzer.
+
+.PARAMETER SmtpPassword
+Optionales SMTP-Passwort.
+
+.PARAMETER SmtpUseSsl
+SMTP mit SSL/TLS verwenden.
+
+.PARAMETER SmtpSubject
+Betreff fuer Fehlerberichte.
+
+.EXAMPLE
+.\Check-MailDns.ps1 -ApiBase https://dns-api.example.net -Domains example.com -Summary
+
+.EXAMPLE
+.\Check-MailDns.ps1 -ApiBase https://dns-api.example.net -DomainSearch "*.example.org" -OutputJson .\report.json
+
+.NOTES
+- PowerShell 5.1 und 7+ werden unterstuetzt.
+- UTF-8-Speicherung empfohlen.
+- Exitcodes: 0=OK, 1=Warnung/Fehler.
+- Ohne Domains werden automatisch Dateien gesucht (maildomains.txt).
 #>
 
 
