@@ -75,6 +75,7 @@ Betreff fuer Fehlerberichte.
 - UTF-8-Speicherung empfohlen.
 - Exitcodes: 0=OK, 1=Warnung/Fehler.
 - Ohne Domains werden automatisch Dateien gesucht (maildomains.txt).
+- ENV: DNS_API_TOKEN sowie SmtpServer/SmtpFrom/SmtpTo/SmtpUser/SmtpPassword.
 #>
 
 
@@ -132,7 +133,7 @@ if (-not $script:AltRootZoneCache) { $script:AltRootZoneCache = @{} }
 if (-not $script:RecordCache)    { $script:RecordCache    = @{} }
 
 # ============================================================================
-# SECTION 5A - Default-Domain-Fallback
+# SECTION 2 - Default-Domain-Fallback
 #   - Wir suchen nach Dateien wie maildomains.txt oder smallmaildomains.txt.
 #   - Wir pruefen Script-Ordner, aktuelles Verzeichnis und deren Eltern.
 #   - Wird eine Datei gefunden, laden wir sie als Domainliste.
@@ -199,7 +200,7 @@ function Import-FallbackDomains {
 }
 
 # ============================================================================
-# SECTION 2 - Logging-Helfer
+# SECTION 3 - Logging-Helfer
 #   - Write-Log zeigt HTTP-Aufrufe in Farbe (nur bei Debug/Verbose).
 #   - Info-Meldungen erscheinen nur im Verbose-Modus.
 # ============================================================================
@@ -330,7 +331,7 @@ $attachmentNote
 }
 
 # ============================================================================
-# SECTION 3 - HTTP-Hilfsfunktionen
+# SECTION 4 - HTTP-Hilfsfunktionen
 #   - Invoke-ApiGet baut eine GET-Anfrage (entweder Body oder Querystring).
 #   - Invoke-ApiGetBoth probiert beide Varianten und sammelt Ergebnisse.
 #   - Invoke-ApiGetAll gibt immer ein Array zurueck (auch bei Fehler -> leer).
@@ -898,19 +899,19 @@ function Invoke-DomainAudit {
   }
 }
 
-  $manualDomainInputs = Expand-InputCollection -Items $Domains
-  $searchPatternInputs = Expand-InputCollection -Items $DomainSearch
-  $domainInputs = Resolve-DomainList -Manual $manualDomainInputs -SearchPatterns $searchPatternInputs
-  if ($domainInputs.Count -eq 0) {
-    $fallback = Import-FallbackDomains
-    if ($fallback.Domains.Count -gt 0) {
-      Write-Warning ('Keine Domains ueber Parameter gefunden. Verwende "{0}" ({1} Eintraege).' -f $fallback.Source, $fallback.Domains.Count)
-      $domainInputs = Resolve-DomainList -Manual $fallback.Domains -SearchPatterns @()
-    }
+$manualDomainInputs = Expand-InputCollection -Items $Domains
+$searchPatternInputs = Expand-InputCollection -Items $DomainSearch
+$domainInputs = Resolve-DomainList -Manual $manualDomainInputs -SearchPatterns $searchPatternInputs
+if ($domainInputs.Count -eq 0) {
+  $fallback = Import-FallbackDomains
+  if ($fallback.Domains.Count -gt 0) {
+    Write-Warning ('Keine Domains ueber Parameter gefunden. Verwende "{0}" ({1} Eintraege).' -f $fallback.Source, $fallback.Domains.Count)
+    $domainInputs = Resolve-DomainList -Manual $fallback.Domains -SearchPatterns @()
   }
-  if ($domainInputs.Count -eq 0) {
-    throw 'Keine Domains gefunden. Uebergib -Domains oder -DomainSearch.'
-  }
+}
+if ($domainInputs.Count -eq 0) {
+  throw 'Keine Domains gefunden. Uebergib -Domains oder -DomainSearch.'
+}
 
 Write-Log ('Starte Checks fuer {0} Domains.' -f $domainInputs.Count)
 

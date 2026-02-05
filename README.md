@@ -3,6 +3,13 @@
 PowerShell-Skript zum Pruefen von Mail-DNS-Eintraegen (MX, SPF, DMARC, DKIM, Autodiscover/SRV443) fuer Domains.
 Die Ergebnisse werden als JSON ausgegeben und optional per SMTP gemeldet.
 
+## Features
+
+- Prueft zentrale Mail-Records (MX, SPF, DMARC, DKIM, Autodiscover/SRV443)
+- Unterstuetzt Domainlisten, Domain-Suche und Fallback-Dateien
+- Liefert konsistente JSON-Ausgabe fuer Automation
+- Optionaler SMTP-Fehlerbericht bei WARN/FAIL
+
 ## Voraussetzungen
 
 - PowerShell 5.1 oder 7+
@@ -15,6 +22,27 @@ Repository klonen und das Skript direkt ausfuehren:
 ```powershell
 ./Check-MailDns.ps1 -ApiBase https://dns-api.example.net -Domains example.com
 ```
+
+## Konfiguration
+
+### Environment-Variablen
+
+- `DNS_API_TOKEN`: Basic-Auth-Token fuer die DNS-API
+- `SmtpServer`, `SmtpPort`, `SmtpFrom`, `SmtpTo`, `SmtpUser`, `SmtpPassword`: SMTP-Konfiguration
+
+### Parameteruebersicht (Auszug)
+
+- `-ApiBase`: Basis-URL der DNS-API (ohne Slash am Ende)
+- `-ApiToken`: Basic-Auth-Token (oder `DNS_API_TOKEN` als Env)
+- `-Domains`: Liste der zu pruefenden Domains
+- `-DomainSearch`: Suchmuster fuer `list_zones` (Wildcards moeglich)
+- `-OutputJson`: Pfad fuer JSON-Report
+- `-AltRoot`: Alternative Root fuer DKIM-Delegation
+- `-IncludeDrafts`: Records mit Status `draft` einbeziehen
+- `-VerboseZones`: Zusatzinfos zur Zone anzeigen
+- `-DebugHttp`: HTTP-Aufrufe sichtbar machen
+- `-Summary`: Tabelle vor JSON anzeigen
+- `-VerboseOutput`: Detaillierte Fortschrittsmeldungen
 
 ## Nutzung
 
@@ -39,7 +67,7 @@ Es gibt drei Wege, Domains zu uebergeben:
 
 ## Ausgabe und Exitcodes
 
-- Standardausgabe ist immer JSON mit einem Zeitstempel und den Ergebnissen.
+- Standardausgabe ist immer JSON mit Zeitstempel und Ergebnissen.
 - Optional wird eine Tabelle angezeigt (`-Summary`).
 - Exitcode `0` bei OK, `1` bei WARN/FAIL.
 
@@ -56,22 +84,6 @@ Optionale Parameter:
 - `-SmtpUser`, `-SmtpPassword`
 - `-SmtpUseSsl`
 - `-SmtpSubject`
-
-## Parameteruebersicht
-
-Wichtige Parameter (Auszug):
-
-- `-ApiBase`: Basis-URL der DNS-API (ohne Slash am Ende)
-- `-ApiToken`: Basic-Auth-Token (oder `DNS_API_TOKEN` als Env)
-- `-Domains`: Liste der zu pruefenden Domains
-- `-DomainSearch`: Suchmuster fuer `list_zones` (Wildcards moeglich)
-- `-OutputJson`: Pfad fuer JSON-Report
-- `-AltRoot`: Alternative Root fuer DKIM-Delegation
-- `-IncludeDrafts`: Records mit Status `draft` einbeziehen
-- `-VerboseZones`: Zusatzinfos zur Zone anzeigen
-- `-DebugHttp`: HTTP-Aufrufe sichtbar machen
-- `-Summary`: Tabelle vor JSON anzeigen
-- `-VerboseOutput`: Detaillierte Fortschrittsmeldungen
 
 ## Beispielausgabe (JSON)
 
